@@ -8,6 +8,32 @@
 #include "drwrap.h"
 #include "drutil.h"
 
+/* FIXME??? A different ordering between what is
+ * being traced and what is actually occuring
+ * is highly likely due to data races.
+ *
+ * For example, if thread-A logs a memory event,
+ * and then thread-B later logs a memory event,
+ * there is no guarantee that the thread-A event
+ * actually is registered first.
+ *
+ * This is a performance trade-off, since even trying
+ * to atomically log events will change the order in
+ * which they would have originally executed, due to
+ * the observer effect 
+ *
+ * Additionally, because threads hold a BUFFER_SIZE size buffer,
+ * event orderings between each buffer flush are lost.
+ * This is generally acceptable, as we assume the application being
+ * traced uses industry and academia accepted methods for
+ * multi-threaded synchronization. E.g. custom user-implemented
+ * spin-locks are NOT allowed in the application.
+ *
+ * DrSigil passes the responsibility of event ordering between
+ * threads to Sigil2 backend analyses.
+ */
+
+
 ///////////////////////////////////////////////////////
 // Definitions
 ///////////////////////////////////////////////////////
@@ -35,66 +61,90 @@ dr_abort_w_msg(const char *msg)
     dr_abort();
 }
 
-///////////////////////////////////////////////////////
-// Setting up clean call code cache
-///////////////////////////////////////////////////////
 
-/* A separate code cache to make
- * the clean function call leaner,
- * in the instrumentation.
- *
- * XXX ML: I think this reduces the amount
- * of context switching that will happen within
- * a basic block. */
-app_pc code_cache;
-
-static void
-clean_call(void)
-{
-    void *drcontext  = dr_get_current_drcontext();
-    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
-    flush((data->thread_id-1) % clo.frontend_threads, data);
-}
-
-static void
-code_cache_init(void)
-{
-    void         *drcontext;
-    instrlist_t  *ilist;
-    instr_t      *where;
-    byte         *end;
-
-    drcontext  = dr_get_current_drcontext();
-    code_cache = dr_nonheap_alloc(PAGE_SIZE,
-                                  DR_MEMPROT_READ  |
-                                  DR_MEMPROT_WRITE |
-                                  DR_MEMPROT_EXEC);
-    ilist = instrlist_create(drcontext);
-
-    /* jump back to the DR's code cache (return address expected in XCX) */
-    where = INSTR_CREATE_jmp_ind(drcontext, opnd_create_reg(DR_REG_XCX));
-    instrlist_meta_append(ilist, where);
-
-    /* The lean procecure simply performs a clean call, and then jump back */
-
-    ///* clean call prior to jump back */
-    dr_insert_clean_call(drcontext, ilist, where, (void *)clean_call, false, 0);
-
-    /* Encodes the instructions into memory and then cleans up. */
-    end = instrlist_encode(drcontext, ilist, code_cache, false);
-    DR_ASSERT((end - code_cache) < PAGE_SIZE);
-    instrlist_clear_and_destroy(drcontext, ilist);
-
-    /* set the memory as just +rx now */
-    dr_memory_protect(code_cache, PAGE_SIZE, DR_MEMPROT_READ | DR_MEMPROT_EXEC);
-}
-
-static void
-code_cache_exit(void)
-{
-    dr_nonheap_free(code_cache, PAGE_SIZE);
-}
-
+//static void
+//clean_call_simd(int simd_type, int opcode, int num_reads, int num_writes)
+//{
+//    void *drcontext = dr_get_current_drcontext();
+//    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
+//    return;
+//    if(data->active == true)
+//    {
+//        switch(simd_type)
+//        {
+//        case 0:
+//            dr_printf("SSE ");
+//            break;
+//        case 1:
+//            dr_printf("SSE2 ");
+//            break;
+//        case 2:
+//            dr_printf("SSE3 ");
+//            break;
+//        case 3:
+//            dr_printf("SSE41 ");
+//            break;
+//        case 4:
+//            dr_printf("SSE42 ");
+//            break;
+//        case 5:
+//            dr_printf("SSE4A ");
+//            break;
+//        case 6:
+//            dr_printf("SSSE3 ");
+//            break;
+//        case 7:
+//            dr_printf("MMX ");
+//            break;
+//        default:
+//            break;
+//        }
+//
+//        dr_printf(" %d %d %d\n", opcode, num_reads, num_writes);
+//    }
+//}
+//
+//static void
+//instrument_simd(void *drcontext, instrlist_t * bb, instr_t *instr)
+//{
+//    int type = -1;
+//    if(instr_is_sse(instr))
+//        type = 0;
+//    if(instr_is_sse2(instr))
+//        type = 1;
+//    if(instr_is_sse3(instr))
+//        type = 2;
+//    if(instr_is_sse41(instr))
+//        type = 3;
+//    if(instr_is_sse42(instr))
+//        type = 4;
+//    if(instr_is_sse4A(instr))
+//        type = 5;
+//    if(instr_is_ssse3(instr))
+//        type = 6;
+//    if(instr_is_mmx(instr))
+//        type = 7;
+//    if(type < 0)
+//        return; /* TODO ERROR */
+//
+//    int opc = instr_get_opcode(instr);
+//    int num_reads = 0;
+//    int num_writes = 0;
+//    if (instr_reads_memory(instr) == true)
+//    {
+//        num_reads = instr_num_srcs(instr);
+//    }
+//    if (instr_writes_memory(instr) == true)
+//    {
+//        num_writes = instr_num_dsts(instr);
+//    }
+//    dr_insert_clean_call(drcontext, bb, instr,
+//                         (void *)clean_call_simd, false, 4,
+//                         OPND_CREATE_INT32(type),
+//                         OPND_CREATE_INT32(opc),
+//                         OPND_CREATE_INT32(num_reads),
+//                         OPND_CREATE_INT32(num_writes));
+//}
 
 ///////////////////////////////////////////////////////
 // DynamoRIO event callbacks
@@ -109,9 +159,11 @@ event_bb_instrument(void *drcontext, /*UNUSED*/ void *tag,
     /* some checks to make sure this is an
      * actual application instruction being
      * instrumented */
-    if (instr_is_app(where) == false)
-        return DR_EMIT_DEFAULT;
-    if (instr_get_app_pc(where) == NULL)
+    if (instr_is_app(where) == false ||
+        instr_get_app_pc(where) == NULL ||
+        instr_is_nop(where)) /* do not consider instructions that
+                                don't do 'work' */
+        /* TODO count control flow? */
         return DR_EMIT_DEFAULT;
 
     dr_fp_type_t fp_t;
@@ -145,17 +197,34 @@ event_bb_instrument(void *drcontext, /*UNUSED*/ void *tag,
         }
     }
 
+    /****************/
+    /* SIMD testing */
+    /****************/
+    /*
+    if(instr_is_sse(where) ||
+       instr_is_sse2(where) ||
+       instr_is_sse3(where) ||
+       instr_is_sse41(where) ||
+       instr_is_sse42(where) ||
+       instr_is_sse4A(where) ||
+       instr_is_ssse3(where) ||
+       instr_is_mmx(where))
+    {
+        instrument_simd(drcontext, bb, where);
+    }
+    */
+    /* TODO
+     * 'instr_is_avx' not included in current API; implement manually
+     */
+
     /******************************/
     /* Sigil Compute Event - FLOP */
     /******************************/
-    else if(instr_is_floating_ex(where, &fp_t))
+    if(instr_is_floating_ex(where, &fp_t))
     {
         if(fp_t == DR_FP_MATH)
         {
-            /* set to flop for now
-             * TODO how to get more interesting stats? (width, etc)
-             */
-            instrument_flop(drcontext, bb, where);
+            instrument_comp(drcontext, bb, where, SGLPRIM_COMP_FLOP);
         }
     }
 
@@ -180,7 +249,7 @@ event_bb_instrument(void *drcontext, /*UNUSED*/ void *tag,
         case OP_neg:
         case OP_inc:
         case OP_dec:
-
+        /* TODO count bit ops as IOP? */
         case OP_xor:
         case OP_and:
         case OP_or:
@@ -189,12 +258,36 @@ event_bb_instrument(void *drcontext, /*UNUSED*/ void *tag,
         case OP_btr:
 
         case OP_aas:
-            instrument_iop(drcontext, bb, where);
+            instrument_comp(drcontext, bb, where, SGLPRIM_COMP_IOP);
         default:
             break;
         }
     }
 
+    return DR_EMIT_DEFAULT;
+}
+
+
+/* we transform string loops into regular loops so we can more easily
+ * monitor every memory reference they make
+ */
+static dr_emit_flags_t
+event_bb_app2app(void *drcontext, void *tag, instrlist_t *bb,
+                 bool for_trace, bool translating)
+{
+    /* XXX
+     * We run into reachability problems,
+     * as-per the documentation on 'drutil_expand_rep_string',
+     * due to extra instrumentation added by Sigil2.
+     *
+     * We don't expect string loops to be significant in benchmarks,
+     * so this should be OK.
+
+    if (!drutil_expand_rep_string(drcontext, bb)) {
+        DR_ASSERT(false);
+    }
+
+     */
     return DR_EMIT_DEFAULT;
 }
 
@@ -206,7 +299,9 @@ event_thread_init(void *drcontext)
 
     /* TODO does 'num_threads' have to be atomic for ARM?
      * If this is a problem, use dr_get_thread_id() */
-    init->thread_id = ++num_threads;
+    init->thread_id = num_threads++;
+
+    /* automatically start collecting events for any spawned threads */
     init->active = true;
 
     init->buf_ptr = dr_thread_alloc(drcontext, sizeof(BufferedSglEv)*BUFFER_SIZE);
@@ -223,9 +318,8 @@ static void
 event_thread_exit(void *drcontext)
 {
     per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
-
-    force_flush((data->thread_id-1) % clo.frontend_threads, data);
-    dr_printf("Leftover: %d\n", data->buf_ptr - data->buf_base);
+    dr_printf("One last flush for thread %d\n", data->thread_id);
+    flush(data->thread_id % clo.frontend_threads, data, true);
 
     dr_thread_free(drcontext, data->buf_base, sizeof(BufferedSglEv)*BUFFER_SIZE);
     dr_thread_free(drcontext, data, sizeof(per_thread_t));
@@ -235,9 +329,12 @@ event_thread_exit(void *drcontext)
 static void
 event_exit(void)
 {
+    dr_printf("Exiting DR: %d frontend threads\n", clo.frontend_threads);
     for(int i=0; i<clo.frontend_threads; ++i)
     {
+        dr_printf("Terminating idx %d\n", i);
         terminate_IPC(i);
+        dr_printf("Terminated idx %d\n", i);
     }
 
     if (!drmgr_unregister_thread_init_event(event_thread_init) ||
@@ -250,14 +347,33 @@ event_exit(void)
     drutil_exit();
     drmgr_exit();
     drwrap_exit();
+}
 
-    code_cache_exit();
+
+static void
+wrap_pre_start_at_main()
+{
+    void *drcontext  = dr_get_current_drcontext();
+    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
+    data->active = true;
+}
+static void
+wrap_post_start_at_main()
+{
+    void *drcontext  = dr_get_current_drcontext();
+    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
+    data->active = false;
 }
 
 static void
 module_load_event(void *drcontext, const module_data_t *mod, bool loaded)
 {
     app_pc towrap;
+
+    if ((towrap = (app_pc)dr_get_proc_address(mod->handle, MAIN)) != NULL)
+    {
+        drwrap_wrap(towrap, wrap_pre_start_at_main, wrap_post_start_at_main);
+    }
 
     if ((towrap = (app_pc)dr_get_proc_address(mod->handle, P_CREATE)) != NULL)
     {
@@ -322,9 +438,19 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
         !drwrap_init())
         DR_ASSERT(false);
 
+    /* Specify priority relative to other instrumentation operations: */
+    drmgr_priority_t priority = {
+        sizeof(priority), /* size of struct */
+        "sigil2",         /* name of our operation */
+        NULL,             /* optional name of operation we should precede */
+        NULL,             /* optional name of operation we should follow */
+        0};               /* numeric priority */
+
     if (!drmgr_register_bb_instrumentation_event(NULL,
                                                  event_bb_instrument,
                                                  NULL) ||
+        !drmgr_register_bb_app2app_event(event_bb_app2app,
+                                         &priority) ||
         !drmgr_register_thread_init_event(event_thread_init) ||
         !drmgr_register_thread_exit_event(event_thread_exit) ||
         !drmgr_register_module_load_event(module_load_event))
@@ -346,6 +472,4 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
 
     /* initialize thread local resources */
     tls_idx = drmgr_register_tls_field();
-
-    code_cache_init();
 }

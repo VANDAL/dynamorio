@@ -75,7 +75,7 @@ write_full_fifo_available(ipc_channel_t *channel, int idx, int size)
 
 
 void
-force_flush(int idx, per_thread_t *data)
+flush(int idx, per_thread_t *data, bool force)
 {
     /*assumption*/DR_ASSERT(DRSIGIL_BUFSIZE > BUFFER_SIZE);
     ipc_channel_t *channel = &IPC[idx];
@@ -103,6 +103,7 @@ force_flush(int idx, per_thread_t *data)
         /* write to shared memory buffer */
         for(int i=channel->shmem_buf_used, j=begin; j<end; ++i, ++j)
         {
+            DR_ASSERT(data->thread_id % clo.frontend_threads == idx);
             shmem_buffer[i].thread_id = data->thread_id;
             shmem_buffer[i].ev.tag = data->buf_base[j].tag;
             switch(data->buf_base[j].tag)
@@ -130,7 +131,7 @@ force_flush(int idx, per_thread_t *data)
         DR_ASSERT(channel->shmem_buf_used <= DRSIGIL_BUFSIZE);
         if(channel->shmem_buf_used == DRSIGIL_BUFSIZE)
         {
-            write_full_fifo_available(channel, channel->shmem_buf_idx, end-begin);
+            write_full_fifo_available(channel, channel->shmem_buf_idx, channel->shmem_buf_used);
             channel->empty_buf_idx[channel->shmem_buf_idx] = false;
             channel->shmem_buf_idx++;
             channel->shmem_buf_used = 0;
@@ -141,87 +142,16 @@ force_flush(int idx, per_thread_t *data)
         begin = end;
     }
 
-    /* FORCE FLUSH HERE */
-    if(channel->shmem_buf_used > 0)
-    {
-        write_full_fifo_available(channel, channel->shmem_buf_idx, channel->shmem_buf_used);
-        channel->empty_buf_idx[channel->shmem_buf_idx] = false;
-        channel->shmem_buf_idx++;
-        channel->shmem_buf_used = 0;
-    }
-
-    /* reset */
-    data->buf_ptr = data->buf_base;
-    dr_mutex_unlock(channel->shared_mem_lock);
-}
-
-
-void
-flush(int idx, per_thread_t *data)
-{
-    /*assumption*/DR_ASSERT(DRSIGIL_BUFSIZE > BUFFER_SIZE);
-    ipc_channel_t *channel = &IPC[idx];
-
-    /* lock shared memory */
-    dr_mutex_lock(channel->shared_mem_lock);
-
-    /* may have to flush across mutliple shared memory buffers
-     * if current buffer does not have enough empty space */
-    int begin = 0;
-    uint remaining = data->buf_ptr - data->buf_base;
-
-    while(remaining > 0)
-    {
-        /* get an available shared memory buffer */
-        channel->shmem_buf_idx = read_empty_fifo_available(channel);
-        DrSigilEvent *shmem_buffer = channel->shared_mem->buf[channel->shmem_buf_idx];
-
-        /* fill shared memory buffer based on buffer space left
-         * and amount of local buffer full */
-        int end = DRSIGIL_MIN(/*shmem buffer*/DRSIGIL_BUFSIZE - channel->shmem_buf_used,
-                              /*local buffer*/remaining + begin); /* XXX This is  essentially
-                                                                   * just data->used */
-
-        /* write to shared memory buffer */
-        for(int i=channel->shmem_buf_used, j=begin; j<end; ++i, ++j)
-        {
-            shmem_buffer[i].thread_id = data->thread_id;
-            shmem_buffer[i].ev.tag = data->buf_base[j].tag;
-            switch(data->buf_base[j].tag)
-            {
-            case SGL_MEM_TAG:
-                shmem_buffer[i].ev.mem = data->buf_base[j].mem;
-                break;
-            case SGL_COMP_TAG:
-                shmem_buffer[i].ev.comp = data->buf_base[j].comp;
-                break;
-            case SGL_SYNC_TAG:
-                shmem_buffer[i].ev.sync = data->buf_base[j].sync;
-                break;
-            case SGL_CXT_TAG:
-                shmem_buffer[i].ev.cxt = data->buf_base[j].cxt;
-                break;
-            default:
-                break;
-            }
-        }
-        /* update shared memory */
-        channel->shmem_buf_used += (end-begin);
-
-        /* tell Sigil2 if buffer was filled and ready to be consumed */
-        DR_ASSERT(channel->shmem_buf_used <= DRSIGIL_BUFSIZE);
-        if(channel->shmem_buf_used == DRSIGIL_BUFSIZE)
-        {
-            write_full_fifo_available(channel, channel->shmem_buf_idx, end-begin);
-            channel->empty_buf_idx[channel->shmem_buf_idx] = false;
-            channel->shmem_buf_idx++;
-            channel->shmem_buf_used = 0;
-        }
-
-        /* check if local buffer was completely written */
-        remaining -= (end-begin);
-        begin = end;
-    }
+	if(force == true)
+	{
+		if(channel->shmem_buf_used > 0)
+    	{
+    	    write_full_fifo_available(channel, channel->shmem_buf_idx, channel->shmem_buf_used);
+    	    channel->empty_buf_idx[channel->shmem_buf_idx] = false;
+    	    channel->shmem_buf_idx++;
+    	    channel->shmem_buf_used = 0;
+    	}
+	}
 
     /* reset */
     data->buf_ptr = data->buf_base;
@@ -299,6 +229,7 @@ void
 terminate_IPC(int idx)
 {
     /* send terminate sequence */
+	dr_printf("disconnecting from %d\n", idx);
     uint finished = DRSIGIL_FINISHED;
     if(dr_write_file(IPC[idx].full_fifo, &finished, sizeof(finished)) != sizeof(finished) ||
        dr_write_file(IPC[idx].full_fifo, &IPC[idx].shmem_buf_idx, sizeof(IPC[idx].shmem_buf_idx)) != sizeof(IPC[idx].shmem_buf_idx) ||
@@ -309,6 +240,7 @@ terminate_IPC(int idx)
 
     /* wait for sigil2 to disconnect */
     while(dr_read_file(IPC[idx].empty_fifo, &finished, sizeof(finished)) > 0);
+    dr_printf("disconnected from %d\n", idx);
 
     dr_close_file(IPC[idx].empty_fifo);
     dr_close_file(IPC[idx].full_fifo);

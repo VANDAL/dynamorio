@@ -52,8 +52,7 @@ extern app_pc code_cache;
 
 void instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, int pos, MemType type);
 void instrument_instr(void *drcontext, instrlist_t *ilist, instr_t *where);
-void instrument_flop(void *drcontext, instrlist_t *ilist, instr_t *where);
-void instrument_iop(void *drcontext, instrlist_t *ilist, instr_t *where);
+void instrument_comp(void *drcontext, instrlist_t *ilist, instr_t *where, CompCostType type);
 
 ///////////////////////////////////////////////////////
 // Sigil2 Interprocess Communication
@@ -63,11 +62,7 @@ void init_IPC(int idx, const char *path);
 void terminate_IPC(int idx);
 
 /* flush data to IPC; IPC is flushed if full */
-void flush(int idx, per_thread_t *data);
-
-/* force data to flush to Sigil2 immediately,
- * regardless if IPC shmem is full */
-void force_flush(int idx, per_thread_t *data);
+void flush(int idx, per_thread_t *data, bool force);
 
 ///////////////////////////////////////////////////////
 // Misc Utilities

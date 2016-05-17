@@ -4,6 +4,7 @@
 #include "drsigil.h"
 #include "drmgr.h"
 
+#define MAIN           "main"
 #define P_CREATE       "pthread_create"
 #define P_JOIN         "pthread_join"
 #define P_MUTEX_LOCK   "pthread_mutex_lock"
@@ -22,16 +23,24 @@ wrap_pre_pthread_create(void *wrapcxt, OUT void **user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
     per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("entering pthread_create: %d\n", data->thread_id);
     data->active = false;
-    
 }
 static void
 wrap_post_pthread_create(void *wrapcxt, void *user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
     per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("exiting pthread_create: %d\n", data->thread_id);
     data->active = true;
+
     data->buf_ptr->tag = SGL_SYNC_TAG;
+    data->buf_ptr->sync.type = SGLPRIM_SYNC_CREATE;
+    data->buf_ptr++;
+    if((ptr_int_t)data->buf_ptr + data->buf_end == 0)
+    {
+        flush(data->thread_id % clo.frontend_threads, data, true);
+    }
 }
 
 
@@ -41,12 +50,26 @@ wrap_post_pthread_create(void *wrapcxt, void *user_data)
 static void
 wrap_pre_pthread_join(void *wrapcxt, OUT void **user_data)
 {
-    dr_printf("entering pthread_join\n");
+    void *drcontext  = dr_get_current_drcontext();
+    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("entering pthread_join: %d\n", data->thread_id);
+    data->active = false;
+
+    data->buf_ptr->tag = SGL_SYNC_TAG;
+    data->buf_ptr->sync.type = SGLPRIM_SYNC_JOIN;
+    data->buf_ptr++;
+    if((ptr_int_t)data->buf_ptr + data->buf_end == 0)
+    {
+        flush(data->thread_id % clo.frontend_threads, data, true);
+    }
 }
 static void
 wrap_post_pthread_join(void *wrapcxt, void *user_data)
 {
-    dr_printf("exiting pthread_join\n");
+    void *drcontext  = dr_get_current_drcontext();
+    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("exiting pthread_join: %d\n", data->thread_id);
+    data->active = true;
 }
 
 
@@ -56,11 +79,26 @@ wrap_post_pthread_join(void *wrapcxt, void *user_data)
 static void
 wrap_pre_pthread_mutex_lock(void *wrapcxt, OUT void **user_data)
 {
+    void *drcontext  = dr_get_current_drcontext();
+    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("entering pthread_mutex_lock: %d\n", data->thread_id);
+    data->active = false;
 }
 static void
 wrap_post_pthread_mutex_lock(void *wrapcxt, void *user_data)
 {
-    dr_printf("exiting pthread_mutex_lock\n");
+    void *drcontext  = dr_get_current_drcontext();
+    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("exiting pthread_mutex_lock: %d\n", data->thread_id);
+    data->active = true;
+
+    data->buf_ptr->tag = SGL_SYNC_TAG;
+    data->buf_ptr->sync.type = SGLPRIM_SYNC_LOCK;
+    data->buf_ptr++;
+    if((ptr_int_t)data->buf_ptr + data->buf_end == 0)
+    {
+        flush(data->thread_id % clo.frontend_threads, data, true);
+    }
 }
 
 
@@ -70,12 +108,26 @@ wrap_post_pthread_mutex_lock(void *wrapcxt, void *user_data)
 static void
 wrap_pre_pthread_mutex_unlock(void *wrapcxt, OUT void **user_data)
 {
-    dr_printf("entering pthread_mutex_unlock\n");
+    void *drcontext  = dr_get_current_drcontext();
+    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("entering pthread_mutex_unlock: %d\n", data->thread_id);
+    data->active = false;
 }
 static void
 wrap_post_pthread_mutex_unlock(void *wrapcxt, void *user_data)
 {
-    dr_printf("exiting pthread_mutex_unlock\n");
+    void *drcontext  = dr_get_current_drcontext();
+    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("exiting pthread_mutex_unlock: %d\n", data->thread_id);
+    data->active = true;
+
+    data->buf_ptr->tag = SGL_SYNC_TAG;
+    data->buf_ptr->sync.type = SGLPRIM_SYNC_UNLOCK;
+    data->buf_ptr++;
+    if((ptr_int_t)data->buf_ptr + data->buf_end == 0)
+    {
+        flush(data->thread_id % clo.frontend_threads, data, true);
+    }
 }
 
 
