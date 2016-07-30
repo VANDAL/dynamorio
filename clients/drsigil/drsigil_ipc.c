@@ -142,16 +142,16 @@ flush(int idx, per_thread_t *data, bool force)
         begin = end;
     }
 
-	if(force == true)
-	{
-		if(channel->shmem_buf_used > 0)
-    	{
-    	    write_full_fifo_available(channel, channel->shmem_buf_idx, channel->shmem_buf_used);
-    	    channel->empty_buf_idx[channel->shmem_buf_idx] = false;
-    	    channel->shmem_buf_idx++;
-    	    channel->shmem_buf_used = 0;
-    	}
-	}
+    if(force == true)
+    {
+        if(channel->shmem_buf_used > 0)
+        {
+            write_full_fifo_available(channel, channel->shmem_buf_idx, channel->shmem_buf_used);
+            channel->empty_buf_idx[channel->shmem_buf_idx] = false;
+            channel->shmem_buf_idx++;
+            channel->shmem_buf_used = 0;
+        }
+    }
 
     /* reset */
     data->buf_ptr = data->buf_base;
@@ -160,28 +160,36 @@ flush(int idx, per_thread_t *data, bool force)
 
 
 void
-init_IPC(int idx, const char *path)
+init_IPC(int idx, const char *path, const char *uid)
 {
     DR_ASSERT(idx < MAX_IPC_CHANNELS);
 
-    int path_len, shmem_len, fullfifo_len, emptyfifo_len;
+    int path_len, uid_len, pad_len, shmem_len, fullfifo_len, emptyfifo_len;
     ipc_channel_t *channel = &IPC[idx];
 
     path_len = strlen(path);
-    /* extra space for '/', '-', '\0' */
-    shmem_len = path_len + sizeof(DRSIGIL_SHMEM_NAME) + sizeof(STRINGIFY(MAX_IPC_CHANNELS)) + 3;
-    fullfifo_len = path_len + sizeof(DRSIGIL_FULLFIFO_NAME) + sizeof(STRINGIFY(MAX_IPC_CHANNELS)) + 3;
-    emptyfifo_len = path_len + sizeof(DRSIGIL_EMPTYFIFO_NAME) + sizeof(STRINGIFY(MAX_IPC_CHANNELS)) + 3;
+    uid_len = strlen(uid);
+    pad_len = 4; /* extra space for '/', 2x'-', '\0' */
+
+    shmem_len = (path_len + uid_len + pad_len +
+                 sizeof(DRSIGIL_SHMEM_NAME) +
+                 sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
+    fullfifo_len = (path_len + uid_len + pad_len +
+                    sizeof(DRSIGIL_FULLFIFO_NAME) +
+                    sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
+    emptyfifo_len = (path_len + uid_len + pad_len +
+                     sizeof(DRSIGIL_EMPTYFIFO_NAME) +
+                     sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
 
     /* set up names of IPC files */
     char shmem_name[shmem_len];
-    sprintf(shmem_name, "%s/%s-%d", path, DRSIGIL_SHMEM_NAME, idx);
+    sprintf(shmem_name, "%s/%s-%d-%s", path, DRSIGIL_SHMEM_NAME, idx, uid);
 
     char fullfifo_name[fullfifo_len];
-    sprintf(fullfifo_name, "%s/%s-%d", path, DRSIGIL_FULLFIFO_NAME, idx);
+    sprintf(fullfifo_name, "%s/%s-%d-%s", path, DRSIGIL_FULLFIFO_NAME, idx, uid);
 
     char emptyfifo_name[emptyfifo_len];
-    sprintf(emptyfifo_name, "%s/%s-%d", path, DRSIGIL_EMPTYFIFO_NAME, idx);
+    sprintf(emptyfifo_name, "%s/%s-%d-%s", path, DRSIGIL_EMPTYFIFO_NAME, idx, uid);
 
     /* initialize read/write pipes */
     channel->empty_fifo = dr_open_file(emptyfifo_name, DR_FILE_READ);
@@ -229,7 +237,7 @@ void
 terminate_IPC(int idx)
 {
     /* send terminate sequence */
-	dr_printf("disconnecting from %d\n", idx);
+    dr_printf("disconnecting from %d\n", idx);
     uint finished = DRSIGIL_FINISHED;
     if(dr_write_file(IPC[idx].full_fifo, &finished, sizeof(finished)) != sizeof(finished) ||
        dr_write_file(IPC[idx].full_fifo, &IPC[idx].shmem_buf_idx, sizeof(IPC[idx].shmem_buf_idx)) != sizeof(IPC[idx].shmem_buf_idx) ||

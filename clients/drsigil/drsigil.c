@@ -467,7 +467,7 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
     /* There are 'frontend_threads' number of channels */
     for(int i=0; i<clo.frontend_threads; ++i)
     {
-        init_IPC(i, clo.tmp_dir);
+        init_IPC(i, clo.tmp_dir, clo.uid);
     }
 
     /* initialize thread local resources */
