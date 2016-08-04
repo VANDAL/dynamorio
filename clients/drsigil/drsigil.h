@@ -38,6 +38,16 @@ struct _per_thread_t
     ptr_int_t buf_end;
 };
 
+/* region-of-interest (ROI)
+ *
+ * If data should be collected or not, depending on command line arguments.
+ * If no relevant args are supplied, then the ROI is assumed to be
+ * the entirety of the application.
+ *
+ * Assumes the ROI is correctly implemented,
+ * and gets turned on/off in the serial portion of the application */
+extern bool roi;
+
 /* thread-local storage for per_thread_t */
 extern int tls_idx;
 
@@ -78,6 +88,8 @@ struct _command_line_options
     int frontend_threads;
     const char *tmp_dir;
     const char *uid;
+    const char *start_func;
+    const char *stop_func;
 } clo;
 void parse(int argc, char *argv[], command_line_options *clo);
 

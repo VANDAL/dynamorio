@@ -18,7 +18,7 @@
 static void
 clean_call_mem(per_thread_t *data, ptr_uint_t address, int size, int type)
 {
-    if(data->active == true)
+    if(data->active == true && roi == true)
     {
         data->buf_ptr->tag = SGL_MEM_TAG;
         data->buf_ptr->mem.type = type;
@@ -71,7 +71,7 @@ instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, int pos, Mem
 static void
 clean_call_instr(per_thread_t *data, ptr_int_t pc)
 {
-    if(data->active == true)
+    if(data->active == true && roi == true)
     {
         data->buf_ptr->tag = SGL_CXT_TAG;
         data->buf_ptr->cxt.type = SGLPRIM_CXT_INSTR;
@@ -125,7 +125,7 @@ instrument_instr(void *drcontext, instrlist_t *ilist, instr_t *where)
 static void
 clean_call_comp(per_thread_t *data, CompCostType type)
 {
-    if(data->active == true)
+    if(data->active == true && roi == true)
     {
         data->buf_ptr->tag = SGL_COMP_TAG;
         data->buf_ptr->comp.type = type;
