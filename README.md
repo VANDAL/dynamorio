@@ -1,3 +1,6 @@
+This is a fork of DynamoRIO for use with [Sigil2](https://github.com/mdlui/Sigil2)
+
+
 # DynamoRIO
 
 ![DynamoRIO logo](http://www.burningcutlery.com/images/dynamorio/drlogo.png)
