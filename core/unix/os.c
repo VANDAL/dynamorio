@@ -363,6 +363,8 @@ app_pc vsyscall_page_start = NULL;
 app_pc vsyscall_syscall_end_pc = NULL;
 /* pc where kernel returns control after sysenter vsyscall */
 app_pc vsyscall_sysenter_return_pc = NULL;
+/* pc where our hook-displaced code was copied */
+app_pc vsyscall_sysenter_displaced_pc = NULL;
 #define VSYSCALL_PAGE_START_HARDCODED ((app_pc)(ptr_uint_t) 0xffffe000)
 #ifdef X64
 /* i#430, in Red Hat Enterprise Server 5.6, vsyscall region is marked
@@ -1325,7 +1327,7 @@ os_timeout(int time_in_milliseconds)
     asm("movzw"IF_X64_ELSE("q","l")" %0, %%"ASM_XAX : : "m"((offs)) : ASM_XAX); \
     asm("mov %"ASM_SEG":(%%"ASM_XAX"), %%"ASM_XAX : : : ASM_XAX);  \
     asm("mov %%"ASM_XAX", %0" : "=m"((var)) : : ASM_XAX);
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
 # define WRITE_TLS_SLOT_IMM(imm, var) \
     __asm__ __volatile__(             \
       READ_TP_TO_R3                   \
@@ -1387,7 +1389,7 @@ is_thread_tls_initialized(void)
     }
 # endif
     return false;
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
     byte **dr_tls_base_addr;
     if (tls_global_type == TLS_TYPE_NONE)
         return false;
@@ -1464,7 +1466,7 @@ get_os_tls_from_dc(dcontext_t *dcontext)
     return (os_local_state_t *)(local_state - offsetof(os_local_state_t, state));
 }
 
-#ifdef ARM
+#ifdef AARCHXX
 bool
 os_set_app_tls_base(dcontext_t *dcontext, reg_id_t reg, void *base)
 {
@@ -1573,7 +1575,7 @@ get_segment_base(uint seg)
 # else
     return (byte *) POINTER_MAX;
  #endif /* HAVE_TLS */
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
     /* XXX i#1551: should we rename/refactor to avoid "segment"? */
     return (byte *) read_thread_register(seg);
 #endif
@@ -2170,7 +2172,7 @@ os_should_swap_state(void)
     /* -private_loader currently implies -mangle_app_seg, but let's be safe. */
     return (INTERNAL_OPTION(mangle_app_seg) &&
             IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false));
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
     /* FIXME i#1582: this should return true, but there is a lot of complexity
      * getting os_switch_seg_to_context() to do the right then when called
      * at main thread init, secondary thread init, early and late injection,
@@ -2212,7 +2214,7 @@ os_swap_context(dcontext_t *dcontext, bool to_app, dr_state_flags_t flags)
 void
 os_swap_context_go_native(dcontext_t *dcontext, dr_state_flags_t flags)
 {
-#ifdef ARM
+#ifdef AARCHXX
     /* FIXME i#1582: remove this routine once os_should_swap_state()
      * is not disabled and we can actually call
      * os_swap_context_go_native() safely from multiple places.
@@ -2407,14 +2409,13 @@ set_thread_private_dcontext(dcontext_t *dcontext)
 #endif
 }
 
-#ifdef SYS_fork
 /* replaces old with new
  * use for forking: child should replace parent's id with its own
  */
 static void
 replace_thread_id(thread_id_t old, thread_id_t new)
 {
-# ifdef HAVE_TLS
+#ifdef HAVE_TLS
     thread_id_t new_tid = new;
     ASSERT(is_thread_tls_initialized());
     DOCHECK(1, {
@@ -2423,7 +2424,7 @@ replace_thread_id(thread_id_t old, thread_id_t new)
         ASSERT(old_tid == old);
     });
     WRITE_TLS_INT_SLOT_IMM(TLS_THREAD_ID_OFFSET, new_tid);
-# else
+#else
     int i;
     mutex_lock(&tls_lock);
     for (i=0; i<MAX_THREADS; i++) {
@@ -2433,9 +2434,8 @@ replace_thread_id(thread_id_t old, thread_id_t new)
         }
     }
     mutex_unlock(&tls_lock);
-# endif
-}
 #endif
+}
 
 #endif /* !NOT_DYNAMORIO_CORE_PROPER */
 
@@ -4666,8 +4666,11 @@ ignorable_system_call_normalized(int num)
     case SYS_cacheflush:
 #endif
         return false;
-#ifdef SYS_readlink
+#ifdef LINUX
+# ifdef SYS_readlink
     case SYS_readlink:
+# endif
+    case SYS_readlinkat:
         return !DYNAMO_OPTION(early_inject);
 #endif
     default:
@@ -4714,7 +4717,7 @@ const reg_id_t syscall_regparms[MAX_SYSCALL_ARGS] = {
     DR_REG_EDI,
     DR_REG_EBP
 # endif /* 64/32-bit */
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
     DR_REG_R0,
     DR_REG_R1,
     DR_REG_R2,
@@ -5960,7 +5963,7 @@ os_switch_seg_to_context(dcontext_t *dcontext, reg_id_t seg, bool to_app)
         return false;
     }
     ASSERT(BOOLS_MATCH(to_app, os_using_app_state(dcontext)));
-#elif defined(ARM)
+#elif defined(AARCHXX)
     os_thread_data_t *ostd = (os_thread_data_t *)dcontext->os_field;
     ASSERT(INTERNAL_OPTION(private_loader));
     if (to_app) {
@@ -5984,7 +5987,7 @@ os_switch_seg_to_context(dcontext_t *dcontext, reg_id_t seg, bool to_app)
         *app_lib_tls_swap_slot = dr_tls_base;
         LOG(THREAD, LOG_LOADER, 2, "%s: switching to %s, setting coproc reg to 0x%x\n",
             __FUNCTION__, (to_app ? "app" : "dr"), os_tls->app_lib_tls_base);
-        res = dynamorio_syscall(SYS_set_tls, 1, os_tls->app_lib_tls_base) == 0;
+        res = write_thread_register(os_tls->app_lib_tls_base);
     } else {
         /* Restore the app's TLS slot that we used for storing DR's TLS base,
          * and put DR's TLS base back to privlib's TLS slot.
@@ -6003,7 +6006,7 @@ os_switch_seg_to_context(dcontext_t *dcontext, reg_id_t seg, bool to_app)
         LOG(THREAD, LOG_LOADER, 2, "%s: switching to %s, setting coproc reg to 0x%x\n",
             __FUNCTION__, (to_app ? "app" : "dr"),
             ostd->priv_lib_tls_base);
-        res = dynamorio_syscall(SYS_set_tls, 1, ostd->priv_lib_tls_base) == 0;
+        res = write_thread_register(ostd->priv_lib_tls_base);
     }
     LOG(THREAD, LOG_LOADER, 2,
         "%s %s: set_tls swap success=%d for thread "TIDFMT"\n",
@@ -6907,13 +6910,16 @@ pre_system_call(dcontext_t *dcontext)
 #ifdef LINUX
 # ifdef SYS_readlink
     case SYS_readlink:
+# endif
+    case SYS_readlinkat:
         if (DYNAMO_OPTION(early_inject)) {
             dcontext->sys_param0 = sys_param(dcontext, 0);
             dcontext->sys_param1 = sys_param(dcontext, 1);
             dcontext->sys_param2 = sys_param(dcontext, 2);
+            if (dcontext->sys_num == SYS_readlinkat)
+                dcontext->sys_param3 = sys_param(dcontext, 3);
         }
         break;
-# endif
 
     /* i#107 syscalls that might change/query app's segment */
 
@@ -7450,9 +7456,11 @@ post_system_call(dcontext_t *dcontext)
     }
 #endif
 
-#ifdef SYS_fork
     /* handle fork, try to do it early before too much logging occurs */
-    if (sysnum == SYS_fork
+    if (false
+# ifdef SYS_fork
+        || sysnum == SYS_fork
+# endif
         IF_LINUX(|| (sysnum == SYS_clone && !TEST(CLONE_VM, dcontext->sys_param0)))) {
         if (result == 0) {
             /* we're the child */
@@ -7483,7 +7491,6 @@ post_system_call(dcontext_t *dcontext)
             os_fork_post(dcontext, true/*parent*/);
         }
     }
-#endif
 
 
     LOG(THREAD, LOG_SYSCALLS, 2,
@@ -7959,18 +7966,25 @@ post_system_call(dcontext_t *dcontext)
     }
 #endif
 
-#if defined(LINUX) && defined(SYS_readlink)
+#ifdef LINUX
+# ifdef SYS_readlink
     case SYS_readlink:
+# endif
+    case SYS_readlinkat:
         if (success && DYNAMO_OPTION(early_inject)) {
+            bool is_at = (sysnum == SYS_readlinkat);
             /* i#907: /proc/self/exe is a symlink to libdynamorio.so.  We need
              * to fix it up if the app queries.  Any thread id can be passed to
              * /proc/%d/exe, so we have to check.  We could instead look for
              * libdynamorio.so in the result but we've tweaked our injector
              * in the past to exec different binaries so this seems more robust.
              */
-            if (symlink_is_self_exe((const char *)dcontext->sys_param0)) {
-                char *tgt = (char *) dcontext->sys_param1;
-                size_t tgt_sz = (size_t) dcontext->sys_param2;
+            if (symlink_is_self_exe((const char *)(is_at ? dcontext->sys_param1 :
+                                                   dcontext->sys_param0))) {
+                char *tgt = (char *) (is_at ? dcontext->sys_param2 :
+                                      dcontext->sys_param1);
+                size_t tgt_sz = (size_t) (is_at ? dcontext->sys_param3 :
+                                          dcontext->sys_param2);
                 int len = snprintf(tgt, tgt_sz, "%s", get_application_name());
                 if (len > 0)
                     set_success_return_val(dcontext, len);

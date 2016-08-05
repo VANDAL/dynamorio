@@ -135,6 +135,7 @@ reg_is_32bit(reg_id_t reg)
     return (reg >= REG_START_32 && reg <= REG_STOP_32);
 }
 
+#if defined(X86) || defined(AARCH64)
 bool
 opnd_is_reg_64bit(opnd_t opnd)
 {
@@ -148,6 +149,7 @@ reg_is_64bit(reg_id_t reg)
 {
     return (reg >= REG_START_64 && reg <= REG_STOP_64);
 }
+#endif /* !ARM */
 
 bool
 opnd_is_reg_pointer_sized(opnd_t opnd)
@@ -966,7 +968,7 @@ const reg_id_t regparms[] = {
     REGPARM_4, REGPARM_5,
 #  endif
 # endif
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
     REGPARM_0, REGPARM_1, REGPARM_2, REGPARM_3,
 # ifdef X64
     REGPARM_4, REGPARM_5, REGPARM_6, REGPARM_7,
@@ -1051,7 +1053,7 @@ opnd_replace_reg(opnd_t *opnd, reg_id_t old_reg, reg_id_t new_reg)
                 reg_id_t b = (old_reg == ob) ? new_reg : ob;
                 reg_id_t i = (old_reg == oi) ? new_reg : oi;
                 int d = opnd_get_disp(*opnd);
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
                 uint amount;
                 dr_shift_type_t shift = opnd_get_index_shift(*opnd, &amount);
                 dr_opnd_flags_t flags = opnd_get_flags(*opnd);
@@ -1787,10 +1789,7 @@ opnd_compute_address_priv(opnd_t opnd, priv_mcontext_t *mc)
 #ifdef X86
         ptr_int_t scale = opnd_get_scale(opnd);
         scaled_index = scale * reg_get_value_priv(index, mc);
-#elif defined(AARCH64)
-        (void)index;
-        ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
-#elif defined(ARM)
+#elif defined(AARCHXX)
         uint amount;
         dr_shift_type_t type = opnd_get_index_shift(opnd, &amount);
         reg_t index_val = reg_get_value_priv(index, mc);
@@ -1798,6 +1797,7 @@ opnd_compute_address_priv(opnd_t opnd, priv_mcontext_t *mc)
         case DR_SHIFT_LSL:
             scaled_index = index_val << amount;
             break;
+# ifndef AARCH64
         case DR_SHIFT_LSR:
             scaled_index = index_val >> amount;
             break;
@@ -1812,6 +1812,7 @@ opnd_compute_address_priv(opnd_t opnd, priv_mcontext_t *mc)
             scaled_index = (index_val >> 1) ||
                 (TEST(EFLAGS_C, mc->cpsr) ? (1 << (sizeof(reg_t)*8-1)) : 0);
             break;
+# endif
         default:
             scaled_index = index_val;
         }
@@ -1851,7 +1852,7 @@ reg_32_to_16(reg_id_t reg)
     CLIENT_ASSERT(reg >= REG_START_32 && reg <= REG_STOP_32,
                   "reg_32_to_16: passed non-32-bit reg");
     return (reg - REG_START_32) + REG_START_16;
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
     CLIENT_ASSERT(false, "reg_32_to_16 not supported on ARM");
     return REG_NULL;
 #endif
@@ -1873,7 +1874,7 @@ reg_32_to_8(reg_id_t reg)
 # endif
     }
     return r8;
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
     CLIENT_ASSERT(false, "reg_32_to_8 not supported on ARM");
     return REG_NULL;
 #endif
@@ -1923,9 +1924,9 @@ reg_32_to_opsz(reg_id_t reg, opnd_size_t sz)
     if (sz == OPSZ_4)
         return reg;
     else if (sz == OPSZ_2)
-        return IF_ARM_ELSE(reg, reg_32_to_16(reg));
+        return IF_AARCHXX_ELSE(reg, reg_32_to_16(reg));
     else if (sz == OPSZ_1)
-        return IF_ARM_ELSE(reg, reg_32_to_8(reg));
+        return IF_AARCHXX_ELSE(reg, reg_32_to_8(reg));
 #ifdef X64
     else if (sz == OPSZ_8)
         return reg_32_to_64(reg);
@@ -2054,7 +2055,7 @@ reg_get_size(reg_id_t reg)
     /* i#176 add reg size handling for floating point registers */
     if (reg >= REG_START_FLOAT && reg <= REG_STOP_FLOAT)
         return OPSZ_10;
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
     if (reg >= DR_REG_Q0 && reg <= DR_REG_Q31)
         return OPSZ_16;
     if (reg >= DR_REG_D0 && reg <= DR_REG_D31)

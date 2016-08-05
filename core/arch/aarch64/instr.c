@@ -34,6 +34,8 @@
 #include "instr.h"
 #include "decode.h"
 
+#include "opcode_names.h"
+
 bool
 instr_set_isa_mode(instr_t *instr, dr_isa_mode_t mode)
 {
@@ -57,8 +59,7 @@ instr_length_arch(dcontext_t *dcontext, instr_t *instr)
 bool
 opc_is_not_a_real_memory_load(int opc)
 {
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
-    return false;
+    return (opc == OP_adr || opc == OP_adrp);
 }
 
 uint
@@ -84,6 +85,12 @@ instr_branch_type(instr_t *cti_instr)
     }
     CLIENT_ASSERT(false, "instr_branch_type: unknown opcode");
     return LINK_INDIRECT;
+}
+
+const char *
+get_opcode_name(int opc)
+{
+    return opcode_names[opc];
 }
 
 bool
@@ -201,13 +208,44 @@ instr_is_syscall(instr_t *instr)
 bool
 instr_is_mov_constant(instr_t *instr, ptr_int_t *value)
 {
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
+    uint opc = instr_get_opcode(instr);
+
+    /* We include several instructions that an assembler might generate for
+     * "MOV reg, #imm", but not EOR or SUB or other instructions that could
+     * in theory be used to generate a zero, nor "MOV reg, wzr/xzr" (for now).
+     */
+
+    /* movn/movz reg, imm */
+    /* FIXME i#1569: NYI */
+    if (false) {
+        opnd_t op = instr_get_src(instr, 0);
+        if (opnd_is_immed_int(op)) {
+            *value = opnd_get_immed_int(op);
+            return true;
+        } else
+            return false;
+    }
+
+    /* orr/add/sub reg, xwr/xzr, imm */
+    if (opc == OP_orr || opc == OP_add || opc == OP_sub) {
+        opnd_t reg = instr_get_src(instr, 0);
+        opnd_t imm = instr_get_src(instr, 1);
+        if (opnd_is_reg(reg) &&
+            (opnd_get_reg(reg) == DR_REG_WZR ||
+             opnd_get_reg(reg) == DR_REG_XZR) &&
+            opnd_is_immed_int(imm)) {
+            *value = opnd_get_immed_int(imm);
+            return true;
+        } else
+            return false;
+    }
+
     return false;
 }
 
 bool instr_is_prefetch(instr_t *instr)
 {
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
+    /* FIXME i#1569: NYI */
     return false;
 }
 
@@ -220,7 +258,15 @@ instr_saves_float_pc(instr_t *instr)
 bool
 instr_is_undefined(instr_t *instr)
 {
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
+    /* FIXME i#1569: Without a complete decoder we cannot recognise all
+     * unallocated encodings, but for testing purposes we can recognise
+     * some of them: blocks at the top and bottom of the encoding space.
+     */
+    if (instr_opcode_valid(instr) &&
+        instr_get_opcode(instr) == OP_xx) {
+        uint enc = opnd_get_immed_int(instr_get_src(instr, 0));
+        return ((enc & 0x18000000) == 0 || (~enc & 0xde000000) == 0);
+    }
     return false;
 }
 
@@ -259,8 +305,7 @@ instr_predicate_is_cond(dr_pred_type_t pred)
 bool
 reg_is_gpr(reg_id_t reg)
 {
-    return ((DR_REG_X0 <= reg && reg <= DR_REG_X30) ||
-            (DR_REG_W0 <= reg && reg <= DR_REG_W30));
+    return (DR_REG_X0 <= reg && reg <= DR_REG_WSP);
 }
 
 bool
@@ -290,10 +335,10 @@ reg_is_fp(reg_id_t reg)
 }
 
 bool
-instr_is_nop(instr_t *inst)
+instr_is_nop(instr_t *instr)
 {
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
-    return false;
+    uint opc = instr_get_opcode(instr);
+    return (opc == OP_nop);
 }
 
 bool
@@ -312,23 +357,24 @@ instr_create_nbyte_nop(dcontext_t *dcontext, uint num_bytes, bool raw)
 bool
 instr_reads_thread_register(instr_t *instr)
 {
-    /* FIXME i#1569: Handle MRS instances other than MRS Xt, TPIDR_EL0. */
-    int opcode = instr_get_opcode(instr);
-    return (opcode == OP_mrs);
+    return (instr_get_opcode(instr) == OP_mrs &&
+            opnd_is_reg(instr_get_src(instr, 0)) &&
+            opnd_get_reg(instr_get_src(instr, 0)) == DR_REG_TPIDR_EL0);
 }
 
 bool
 instr_writes_thread_register(instr_t *instr)
 {
-    /* FIXME i#1569: Handle MSR instances other than MSR TPIDR_EL0, Xt. */
-    int opcode = instr_get_opcode(instr);
-    return (opcode == OP_msr);
+    return (instr_get_opcode(instr) == OP_msr &&
+            instr_num_dsts(instr) == 1 &&
+            opnd_is_reg(instr_get_dst(instr, 0)) &&
+            opnd_get_reg(instr_get_dst(instr, 0)) == DR_REG_TPIDR_EL0);
 }
 
 DR_API
 bool
 instr_is_exclusive_store(instr_t *instr)
 {
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
+    /* FIXME i#1569: NYI */
     return false;
 }

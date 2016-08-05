@@ -1387,8 +1387,6 @@
   instr_create_1dst_1src((dc), OP_vmovdqa, (d), (s))
 #define INSTR_CREATE_vlddqu(dc, d, s) \
   instr_create_1dst_1src((dc), OP_vlddqu, (d), (s))
-#define INSTR_CREATE_vpshufb(dc, d, s) \
-  instr_create_1dst_1src((dc), OP_vpshufb, (d), (s))
 #define INSTR_CREATE_vpmovsxbw(dc, d, s) \
   instr_create_1dst_1src((dc), OP_vpmovsxbw, (d), (s))
 #define INSTR_CREATE_vpmovsxbd(dc, d, s) \
@@ -1505,6 +1503,14 @@
 /* AVX2 */
 #define INSTR_CREATE_vbroadcasti128(dc, d, s) \
   instr_create_1dst_1src((dc), OP_vbroadcasti128, (d), (s))
+#define INSTR_CREATE_vpbroadcastb(dc, d, s) \
+  instr_create_1dst_1src((dc), OP_vpbroadcastb, (d), (s))
+#define INSTR_CREATE_vpbroadcastw(dc, d, s) \
+  instr_create_1dst_1src((dc), OP_vpbroadcastw, (d), (s))
+#define INSTR_CREATE_vpbroadcastd(dc, d, s) \
+  instr_create_1dst_1src((dc), OP_vpbroadcastd, (d), (s))
+#define INSTR_CREATE_vpbroadcastq(dc, d, s) \
+  instr_create_1dst_1src((dc), OP_vpbroadcastq, (d), (s))
 
 /* @} */ /* end doxygen group */
 
@@ -2061,6 +2067,8 @@
   instr_create_1dst_2src((dc), OP_vaddsubpd, (d), (s1), (s2))
 #define INSTR_CREATE_vaddsubps(dc, d, s1, s2) \
   instr_create_1dst_2src((dc), OP_vaddsubps, (d), (s1), (s2))
+#define INSTR_CREATE_vpshufb(dc, d, s1, s2) \
+  instr_create_1dst_2src((dc), OP_vpshufb, (d), (s1), (s2))
 #define INSTR_CREATE_vphaddw(dc, d, s1, s2) \
   instr_create_1dst_2src((dc), OP_vphaddw, (d), (s1), (s2))
 #define INSTR_CREATE_vphaddd(dc, d, s1, s2) \

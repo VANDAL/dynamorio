@@ -114,6 +114,9 @@ typedef struct _per_thread_t {
     int pending_unreserved; /* count of to-be-lazily-restored unreserved regs */
     /* We store the linear address of our TLS for access from another thread: */
     byte *tls_seg_base;
+    /* bb-local values */
+    drreg_bb_properties_t bb_props;
+    bool bb_has_internal_flow;
 } per_thread_t;
 
 static drreg_options_t ops;
@@ -277,6 +280,8 @@ drreg_event_bb_analysis(void *drcontext, void *tag, instrlist_t *bb,
 
     for (reg = DR_REG_START_GPR; reg <= DR_REG_STOP_GPR; reg++)
         pt->reg[GPR_IDX(reg)].app_uses = 0;
+    /* pt->bb_props is set to 0 at thread init and after each bb */
+    pt->bb_has_internal_flow = false;
 
     /* Reverse scan is more efficient.  This means our indices are also reversed. */
     for (inst = instrlist_last(bb); inst != NULL; inst = instr_get_prev(inst)) {
@@ -286,6 +291,16 @@ drreg_event_bb_analysis(void *drcontext, void *tag, instrlist_t *bb,
 
         bool xfer = (instr_is_cti(inst) || instr_is_interrupt(inst) ||
                      instr_is_syscall(inst));
+
+        if (!pt->bb_has_internal_flow &&
+            (instr_is_ubr(inst) || instr_is_cbr(inst)) &&
+            opnd_is_instr(instr_get_target(inst))) {
+            /* i#1954: we disable some opts in the presence of control flow. */
+            pt->bb_has_internal_flow = true;
+            LOG(drcontext, LOG_ALL, 2,
+                "%s @%d."PFX": disabling lazy restores due to intra-bb control flow\n",
+                __FUNCTION__, index, instr_get_app_pc(inst));
+        }
 
         /* GPR liveness */
         LOG(drcontext, LOG_ALL, 3, "%s @%d."PFX":", __FUNCTION__,
@@ -405,7 +420,12 @@ drreg_event_bb_insert_late(void *drcontext, void *tag, instrlist_t *bb, instr_t 
                  * condition failing and our write handling saving the wrong value.
                  */
                 (instr_writes_to_reg(inst, reg, DR_QUERY_INCLUDE_ALL) &&
-                 !instr_writes_to_reg(inst, reg, DR_QUERY_DEFAULT))) {
+                 !instr_writes_to_reg(inst, reg, DR_QUERY_DEFAULT)) ||
+                /* i#1954: for complex bbs we must restore before the next app instr */
+                (!pt->reg[GPR_IDX(reg)].in_use &&
+                 ((pt->bb_has_internal_flow &&
+                   !TEST(DRREG_IGNORE_CONTROL_FLOW, pt->bb_props)) ||
+                  TEST(DRREG_CONTAINS_SPANNING_CONTROL_FLOW, pt->bb_props)))) {
                 if (!pt->reg[GPR_IDX(reg)].in_use) {
                     LOG(drcontext, LOG_ALL, 3, "%s @%d."PFX": lazily restoring %s\n",
                         __FUNCTION__, pt->live_idx, instr_get_app_pc(inst),
@@ -513,14 +533,20 @@ drreg_event_bb_insert_late(void *drcontext, void *tag, instrlist_t *bb, instr_t 
             }
         } else if (!pt->reg[GPR_IDX(reg)].native &&
                    instr_writes_to_reg(inst, reg, DR_QUERY_INCLUDE_ALL)) {
-            /* For an unreserved reg that's written, just drop the slot */
-            ASSERT(!pt->reg[GPR_IDX(reg)].ever_spilled, "reg was dead");
+            /* For an unreserved reg that's written, just drop the slot, even
+             * if it was spilled at an earlier reservation point.
+             */
+            if (pt->reg[GPR_IDX(reg)].ever_spilled)
+                pt->reg[GPR_IDX(reg)].ever_spilled = false; /* no need to restore */
             res = drreg_restore_reg_now(drcontext, bb, inst, pt, reg);
             if (res != DRREG_SUCCESS)
                 drreg_report_error(res, "slot release on app write failed");
             pt->pending_unreserved--;
         }
     }
+
+    if (drmgr_is_last_instr(drcontext, inst))
+        pt->bb_props = 0;
 
 #ifdef DEBUG
     if (drmgr_is_last_instr(drcontext, inst)) {
@@ -692,8 +718,10 @@ drreg_reserve_reg_internal(void *drcontext, instrlist_t *ilist, instr_t *where,
                 continue;
             if (reg == dr_get_stolen_reg()
                 IF_ARM(|| reg == DR_REG_PC)
-                /* Avoid xsp, even if it appears dead in things like OP_sysenter */
-                IF_X86(|| reg == DR_REG_XSP))
+                /* Avoid xsp, even if it appears dead in things like OP_sysenter.
+                 * On AArch64 use of SP is very restricted.
+                 */
+                IF_NOT_ARM(|| reg == DR_REG_XSP))
                 continue;
             if (reg_allowed != NULL && drvector_get_entry(reg_allowed, idx) == NULL)
                 continue;
@@ -928,6 +956,21 @@ drreg_is_register_dead(void *drcontext, reg_id_t reg, instr_t *inst, bool *dead)
     return DRREG_SUCCESS;
 }
 
+drreg_status_t
+drreg_set_bb_properties(void *drcontext, drreg_bb_properties_t flags)
+{
+    per_thread_t *pt = (per_thread_t *) drmgr_get_tls_field(drcontext, tls_idx);
+    if (drmgr_current_bb_phase(drcontext) != DRMGR_PHASE_APP2APP &&
+        drmgr_current_bb_phase(drcontext) == DRMGR_PHASE_ANALYSIS &&
+        drmgr_current_bb_phase(drcontext) == DRMGR_PHASE_INSERTION)
+        return DRREG_ERROR_FEATURE_NOT_AVAILABLE;
+    /* XXX: interactions with multiple callers gets messy...for now we just or-in */
+    pt->bb_props |= flags;
+    LOG(drcontext, LOG_ALL, 2,
+        "%s: bb flags are now 0x%x\n", __FUNCTION__, pt->bb_props);
+    return DRREG_SUCCESS;
+}
+
 /***************************************************************************
  * ARITHMETIC FLAGS
  */
@@ -964,7 +1007,7 @@ drreg_spill_aflags(void *drcontext, instrlist_t *ilist, instr_t *where, per_thre
         drvector_get_entry(&pt->reg[DR_REG_XAX-DR_REG_START_GPR].live, pt->live_idx) ==
         REG_LIVE)
         restore_reg(drcontext, pt, DR_REG_XAX, temp_slot, ilist, where, true);
-#elif defined(ARM)
+#elif defined(AARCHXX)
     drreg_status_t res = DRREG_SUCCESS;
     reg_id_t scratch;
     res = drreg_reserve_reg_internal(drcontext, ilist, where, NULL, false, &scratch);
@@ -1008,7 +1051,7 @@ drreg_restore_aflags(void *drcontext, instrlist_t *ilist, instr_t *where,
         drvector_get_entry(&pt->reg[DR_REG_XAX-DR_REG_START_GPR].live, pt->live_idx) ==
         REG_LIVE)
         restore_reg(drcontext, pt, DR_REG_XAX, temp_slot, ilist, where, true);
-#elif defined(ARM)
+#elif defined(AARCHXX)
     drreg_status_t res = DRREG_SUCCESS;
     reg_id_t scratch;
     res = drreg_reserve_reg_internal(drcontext, ilist, where, NULL, false, &scratch);
@@ -1212,7 +1255,7 @@ drreg_event_restore_state(void *drcontext, bool restore_memory,
     if (spilled_to_aflags < MAX_SPILLS) {
         reg_t val = get_spilled_value(drcontext, spilled_to_aflags);
         reg_t newval = info->mcontext->xflags;
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
         newval &= ~(EFLAGS_ARITH);
         newval |= val;
 #elif defined(X86)

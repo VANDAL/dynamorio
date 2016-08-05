@@ -1,6 +1,7 @@
 # **********************************************************
 # Copyright (c) 2010-2016 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
+# Copyright (c) 2016      ARM Limited.    All rights reserved.
 # **********************************************************
 
 # Redistribution and use in source and binary forms, with or without
@@ -1582,8 +1583,17 @@ if (WIN32)
   torunonly(common.decode-stress common.decode common/decode.c
     "-stress_recreate_state" "")
 endif (WIN32)
+
+if (X86)
+  set(control_flags "eflags")
+elseif (AARCH64)
+  set(control_flags "nzcv")
+endif ()
+if (NOT ARM) # FIXME i#1551: port eflags/nzcv to ARM
+  tobuild(common.${control_flags} common/${control_flags}.c)
+endif ()
+
 if (X86) # FIXME i#1551, i#1569: port asm to ARM and AArch64
-  tobuild(common.eflags common/eflags.c)
   tobuild(common.floatpc common/floatpc.c)
   torunonly(common.floatpc_xl8all common.floatpc common/floatpc.c "-translate_fpu_pc" "")
   tobuild(common.getretaddr common/getretaddr.c)
@@ -1692,8 +1702,10 @@ if (CLIENT_INTERFACE)
     tobuild_ci(client.abort client-interface/abort.c "" "" "")
     tobuild_ci(client.crashmsg client-interface/crashmsg.c "" "" "")
     if (NOT MACOS) # FIXME i#1360: implement Mach-O export iterator
-      tobuild_ci(client.modules client-interface/modules.c "" "" "")
       tobuild_appdll(client.modules client-interface/modules.c)
+      get_target_property(modules_libname client.modules.appdll
+        LOCATION${location_suffix})
+      tobuild_ci(client.modules client-interface/modules.c "" "" "${modules_libname}")
       # FIXME i#975: we can't load libc with STATIC_LIBRARY yet.
       append_property_string(TARGET client.modules.appdll LINK_FLAGS "-nodefaultlibs")
     endif ()
@@ -2007,36 +2019,53 @@ if (CLIENT_INTERFACE)
     target_link_libraries(client.drmgr-test ${libpthread})
   endif ()
 
-  if (NOT AARCH64) # FIXME i#1569: port to AArch64
-    tobuild_ci(client.drreg-test client-interface/drreg-test.c "" "" "")
-    use_DynamoRIO_extension(client.drreg-test.dll drmgr)
-    use_DynamoRIO_extension(client.drreg-test.dll drreg)
-    target_include_directories(client.drreg-test PRIVATE
-      ${CMAKE_CURRENT_SOURCE_DIR}/client-interface)
+  tobuild_ci(client.drx_buf-test client-interface/drx_buf-test.c "" "" "")
+  use_DynamoRIO_extension(client.drx_buf-test.dll drmgr)
+  use_DynamoRIO_extension(client.drx_buf-test.dll drx)
+  if (UNIX AND NOT ANDROID) # pthreads is inside Bionic on Android
+    target_link_libraries(client.drx_buf-test ${libpthread})
+  endif ()
+  target_include_directories(client.drx_buf-test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/client-interface)
 
-    tobuild_ci(client.drx-test client-interface/drx-test.c "" "" "")
-    use_DynamoRIO_extension(client.drx-test.dll drx)
+  tobuild_ci(client.drreg-test client-interface/drreg-test.c "" "" "")
+  use_DynamoRIO_extension(client.drreg-test.dll drmgr)
+  use_DynamoRIO_extension(client.drreg-test.dll drreg)
+  target_include_directories(client.drreg-test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/client-interface)
 
-    tobuild_ci(client.drxmgr-test client-interface/drxmgr-test.c "" "" "")
-    use_DynamoRIO_extension(client.drxmgr-test.dll drmgr)
-    use_DynamoRIO_extension(client.drxmgr-test.dll drx)
-    use_DynamoRIO_extension(client.drxmgr-test.dll drreg)
+  tobuild_ci(client.drreg-flow client-interface/drreg-flow.c "" "" "")
+  use_DynamoRIO_extension(client.drreg-flow.dll drmgr)
+  use_DynamoRIO_extension(client.drreg-flow.dll drreg)
+  use_DynamoRIO_extension(client.drreg-flow.dll drutil)
 
-    tobuild_appdll(client.drwrap-test client-interface/drwrap-test.c)
-    get_target_path_for_execution(drwrap_libpath client.drwrap-test.appdll)
-    tobuild_ci(client.drwrap-test client-interface/drwrap-test.c "" "" "${drwrap_libpath}")
-    use_DynamoRIO_extension(client.drwrap-test.dll drwrap)
-    tochcon(client.drwrap-test.appdll textrel_shlib_t)
-    if (WIN32)
-      # export from asm code
-      append_link_flags(client.drwrap-test.appdll "/export:makes_tailcall")
-    endif (WIN32)
-    if (NOT ANDROID) # XXX i#1874: get working on Android
-      tobuild_ci(client.drwrap-test-callconv client-interface/drwrap-test-callconv.cpp
-        "" "" "")
-      use_DynamoRIO_extension(client.drwrap-test-callconv.dll drwrap)
-    endif ()
-  endif (NOT AARCH64)
+  tobuild_ci(client.drreg-cross client-interface/drreg-cross.c "" "" "")
+  use_DynamoRIO_extension(client.drreg-cross.dll drmgr)
+  use_DynamoRIO_extension(client.drreg-cross.dll drreg)
+  use_DynamoRIO_extension(client.drreg-cross.dll drutil)
+
+  tobuild_ci(client.drx-test client-interface/drx-test.c "" "" "")
+  use_DynamoRIO_extension(client.drx-test.dll drx)
+
+  tobuild_ci(client.drxmgr-test client-interface/drxmgr-test.c "" "" "")
+  use_DynamoRIO_extension(client.drxmgr-test.dll drmgr)
+  use_DynamoRIO_extension(client.drxmgr-test.dll drx)
+  use_DynamoRIO_extension(client.drxmgr-test.dll drreg)
+
+  tobuild_appdll(client.drwrap-test client-interface/drwrap-test.c)
+  get_target_path_for_execution(drwrap_libpath client.drwrap-test.appdll)
+  tobuild_ci(client.drwrap-test client-interface/drwrap-test.c "" "" "${drwrap_libpath}")
+  use_DynamoRIO_extension(client.drwrap-test.dll drwrap)
+  tochcon(client.drwrap-test.appdll textrel_shlib_t)
+  if (WIN32)
+    # export from asm code
+    append_link_flags(client.drwrap-test.appdll "/export:makes_tailcall")
+  endif (WIN32)
+  if (NOT ANDROID) # XXX i#1874: get working on Android
+    tobuild_ci(client.drwrap-test-callconv client-interface/drwrap-test-callconv.cpp
+      "" "" "")
+    use_DynamoRIO_extension(client.drwrap-test-callconv.dll drwrap)
+  endif ()
 
   # We rely on dbghelp >= 6.0 for our drsyms and sample.instrcalls tests,
   # but the system dbghelp pre-Vista is too old, so we copy one from VS.
@@ -2055,7 +2084,7 @@ if (CLIENT_INTERFACE)
     endif (dbghelp_path)
   endif ()
 
-  if (NOT ANDROID AND NOT AARCH64)
+  if (NOT ANDROID)
     # XXX i#1874: get working on Android
     # FIXME i#1569: get working on AArch64
     tobuild_appdll(client.drsyms-test client-interface/drsyms-test.cpp)
@@ -2158,7 +2187,11 @@ if (CLIENT_INTERFACE)
         "${CMAKE_CURRENT_SOURCE_DIR}/api/dis-armT32-randtest.raw;-thumb" OFF)
       set(api.disT32_expectbase "dis-armT32")
     endif ()
-  else (ARM)
+  elseif (AARCH64)
+    add_api_exe(api.dis-a64 api/dis-a64.c OFF)
+    torunonly_api(api.dis-a64 api.dis-a64 api/dis-a64.c ""
+      "-q;${CMAKE_CURRENT_SOURCE_DIR}/api/dis-a64.txt" OFF)
+  elseif (X86)
     tobuild_api(api.dis api/dis.c "-syntax_intel"
       "${CMAKE_CURRENT_SOURCE_DIR}/api/dis-udis86-randtest.raw" OFF)
     if (X64)
@@ -2232,17 +2265,18 @@ if (CLIENT_INTERFACE)
     if (NOT ARM) # FIXME i#1551: fix bugs on ARM
       get_property(sample_list GLOBAL PROPERTY DynamoRIO_sample_list)
       foreach (sample ${sample_list})
-        torunonly_ci(sample.${sample} common.eflags ${sample} common/eflags.c "" "" "")
+        torunonly_ci(sample.${sample} common.${control_flags}
+          ${sample} common/${control_flags}.c "" "" "")
         if (sample STREQUAL "inscount")
           # test out-of-line clean call
-          torunonly_ci(sample.${sample}.cleancall common.eflags ${sample}
-            common/eflags.c "" "-opt_cleancall 0" "")
+          torunonly_ci(sample.${sample}.cleancall common.${control_flags} ${sample}
+            common/${control_flags}.c "" "-opt_cleancall 0" "")
           if (UNIX)
-            torunonly_ci(sample.${sample}.prof-pcs.cleancall common.eflags ${sample}
-              common/eflags.c "" "-prof_pcs -opt_cleancall 0" "")
+            torunonly_ci(sample.${sample}.prof-pcs.cleancall common.${control_flags}
+              ${sample} common/${control_flags}.c "" "-prof_pcs -opt_cleancall 0" "")
             if (NOT X64)
               torunonly_ci(sample.${sample}.prof-pcs.thread-private.cleancall
-                common.eflags ${sample} common/eflags.c ""
+                common.${control_flags} ${sample} common/${control_flags}.c ""
                 "-thread_private -prof_pcs -opt_cleancall 0" "")
             endif (NOT X64)
           endif (UNIX)
@@ -2892,9 +2926,8 @@ if (VPS) # relies on being aborted on .B violation
   tobuild(security-common.jmp_from_trace security-common/jmp_from_trace.c)
   tochcon(security-common.jmp_from_trace textrel_shlib_t)
 endif (VPS)
+tobuild(security-common.ret_noncall_trace security-common/ret_noncall_trace.c)
 if (NOT ARM) # FIXME i#1551: fix bugs on ARM
-  tobuild(security-common.ret_noncall_trace security-common/ret_noncall_trace.c)
-
   # FIXME i#1423: somehow when built with VS2013 x64 you can't catch a fault on
   # jumping to an invalid address!  For now we disable for VS2013 x64.
   # It also seems to fail on win8 x64 with VS2012.
@@ -3073,6 +3106,7 @@ if (APPLE)
   set_tests_properties(
     samples_proj
     code_api|common.broadfun
+    code_api|common.decode-bad
     code_api|common.fib
     code_api|common.floatpc
     code_api|common.floatpc_xl8all

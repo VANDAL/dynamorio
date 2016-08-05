@@ -985,6 +985,14 @@ sign_extend_immed(instr_t *instr, int srcnum, opnd_t *src)
 {
     opnd_size_t opsz = OPSZ_NA;
     bool resize = true;
+
+#if !defined(X86) && !defined(ARM)
+    /* Automatic sign extension is probably only useful on Intel but
+     * is left enabled on ARM (AArch32) as it is what some tests expect.
+     */
+    return;
+#endif
+
     if (opnd_is_immed_int(*src)) {
         /* PR 327775: force operand to sign-extend if all other operands
          * are of a larger and identical-to-each-other size (since we
@@ -1049,8 +1057,14 @@ internal_instr_disassemble(char *buf, size_t bufsz, size_t *sofar INOUT,
         print_to_buffer(buf, bufsz, sofar, "<label>");
         return;
     } else if (instr_opcode_valid(instr)) {
+#ifdef AARCH64
+        /* We do not use instr_info_t encoding info on AArch64. */
+        info = NULL;
+        name = get_opcode_name(instr_get_opcode(instr));
+#else
         info = instr_get_instr_info(instr);
         name = info->name;
+#endif
     } else
         name = "<RAW>";
 

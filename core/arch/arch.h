@@ -114,7 +114,7 @@ mixed_mode_enabled(void)
 # define SCRATCH_REG3_OFFS XDX_OFFSET
 # define SCRATCH_REG4_OFFS XSI_OFFSET
 # define SCRATCH_REG5_OFFS XDI_OFFSET
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
 # define R0_OFFSET         ((MC_OFFS) + (offsetof(priv_mcontext_t, r0)))
 # define R1_OFFSET         ((MC_OFFS) + (offsetof(priv_mcontext_t, r1)))
 # define R2_OFFSET         ((MC_OFFS) + (offsetof(priv_mcontext_t, r2)))
@@ -431,19 +431,19 @@ mangle_exit(void);
 void
 insert_mov_immed_ptrsz(dcontext_t *dcontext, ptr_int_t val, opnd_t dst,
                        instrlist_t *ilist, instr_t *instr,
-                       instr_t **first OUT, instr_t **second OUT);
+                       OUT instr_t **first, OUT instr_t **last);
 void
 insert_push_immed_ptrsz(dcontext_t *dcontext, ptr_int_t val,
                         instrlist_t *ilist, instr_t *instr,
-                        instr_t **first OUT, instr_t **second OUT);
+                        OUT instr_t **first, OUT instr_t **last);
 void
 insert_mov_instr_addr(dcontext_t *dcontext, instr_t *src, byte *encode_estimate,
                       opnd_t dst, instrlist_t *ilist, instr_t *instr,
-                      instr_t **first, instr_t **second);
+                      OUT instr_t **first, OUT instr_t **last);
 void
 insert_push_instr_addr(dcontext_t *dcontext, instr_t *src_inst, byte *encode_estimate,
                        instrlist_t *ilist, instr_t *instr,
-                       instr_t **first, instr_t **second);
+                       OUT instr_t **first, OUT instr_t **last);
 
 /* in mangle.c arch-specific implementation */
 #ifdef ARM
@@ -461,11 +461,11 @@ void
 insert_mov_immed_arch(dcontext_t *dcontext, instr_t *src_inst, byte *encode_estimate,
                       ptr_int_t val, opnd_t dst,
                       instrlist_t *ilist, instr_t *instr,
-                      instr_t **first, instr_t **second);
+                      OUT instr_t **first, OUT instr_t **last);
 void
 insert_push_immed_arch(dcontext_t *dcontext, instr_t *src_inst, byte *encode_estimate,
                        ptr_int_t val, instrlist_t *ilist, instr_t *instr,
-                       instr_t **first, instr_t **second);
+                       OUT instr_t **first, OUT instr_t **last);
 instr_t *
 convert_to_near_rel_arch(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr);
 void
@@ -491,7 +491,7 @@ instr_t *
 mangle_rel_addr(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
                 instr_t *next_instr);
 #endif
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
 /* mangle instructions that use pc or dr_reg_stolen */
 instr_t *
 mangle_special_registers(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
@@ -628,7 +628,16 @@ enum {
 #ifdef HASHTABLE_STATISTICS
     HTABLE_STATS_SPILL_SLOT     = TLS_HTABLE_STATS_SLOT,
 #endif
+#ifdef AARCH64
+    /* Every fragment has the prefix ldr x0, [x(stolen), #8]. */
+    ENTRY_PC_SPILL_SLOT         = TLS_REG1_SLOT,
+#endif
 };
+
+#ifdef AARCH64
+/* Every fragment has the prefix ldr x0, [x(stolen), #8]. */
+# define ENTRY_PC_REG        DR_REG_X0
+#endif
 
 /* in interp.c but not exported to non-x86 files */
 bool must_not_be_inlined(app_pc pc);
@@ -1308,7 +1317,7 @@ add_patch_entry_internal(patch_list_t *patch, instr_t *instr, ushort patch_flags
 cache_pc
 get_direct_exit_target(dcontext_t *dcontext, uint flags);
 
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
 size_t
 get_fcache_return_tls_offs(dcontext_t *dcontext, uint flags);
 

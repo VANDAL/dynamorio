@@ -45,6 +45,9 @@
 #define _OS_TLS_H_ 1
 
 #include "os_private.h"  /* ASM_XAX */
+#if defined(ARM) && defined(LINUX)
+# include "include/syscall.h" /* SYS_set_tls */
+#endif
 
 /* We support 3 different methods of creating a segment (see os_tls_init()) */
 typedef enum {
@@ -106,7 +109,7 @@ typedef struct _our_modify_ldt_t {
     ASSERT(sizeof(val) == sizeof(reg_t));                               \
     asm volatile("mov %0,%%"ASM_XAX"; mov %%"ASM_XAX", %"LIB_ASM_SEG";" \
                  : : "m" ((val)) : ASM_XAX);
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
 # define WRITE_DR_SEG(val)  ASSERT_NOT_REACHED()
 # define WRITE_LIB_SEG(val) ASSERT_NOT_REACHED()
 # define TLS_SLOT_VAL_EXITED ((byte *)PTR_UINT_MINUS_1)
@@ -115,8 +118,8 @@ typedef struct _our_modify_ldt_t {
 static inline ptr_uint_t
 read_thread_register(reg_id_t reg)
 {
-    uint sel;
 #ifdef X86
+    uint sel;
     if (reg == SEG_FS) {
         asm volatile("movl %%fs, %0" : "=r"(sel));
     } else if (reg == SEG_GS) {
@@ -131,7 +134,8 @@ read_thread_register(reg_id_t reg)
      * is_segment_register_initialized().
      */
     sel &= 0xffff;
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
+    ptr_uint_t sel;
     if (reg == DR_REG_TPIDRURO) {
         IF_X64_ELSE({
             asm volatile("mrs %0, tpidrro_el0" : "=r"(sel));
@@ -154,9 +158,24 @@ read_thread_register(reg_id_t reg)
         ASSERT_NOT_REACHED();
         return 0;
     }
+#else
+    ASSERT_NOT_IMPLEMENTED(false);
 #endif
     return sel;
 }
+
+#ifdef AARCHXX
+static inline bool
+write_thread_register(void *val)
+{
+# ifdef AARCH64
+    asm volatile("msr tpidr_el0, %0" : : "r"(val));
+    return true;
+# else
+    return (dynamorio_syscall(SYS_set_tls, 1, val) == 0);
+# endif
+}
+#endif
 
 #if defined(LINUX) && defined(X86) && defined(X64) && !defined(ARCH_SET_GS)
 #  define ARCH_SET_GS 0x1001
@@ -232,7 +251,7 @@ tls_thread_init(os_local_state_t *os_tls, byte *segment);
 void
 tls_thread_free(tls_type_t tls_type, int index);
 
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
 byte **
 get_dr_tls_base_addr(void);
 #endif

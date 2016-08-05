@@ -120,13 +120,16 @@ instr_is_inline_syscall_jmp(dcontext_t *dcontext, instr_t *inst)
     return (instr_get_opcode(inst) == OP_jmp_short &&
             opnd_is_instr(instr_get_target(inst)));
 # elif defined(AARCH64)
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
-    return false;
+    return (instr_get_opcode(inst) == OP_b &&
+            opnd_is_instr(instr_get_target(inst)));
 # elif defined(ARM)
     return ((instr_get_opcode(inst) == OP_b_short ||
              /* A32 uses a regular jump */
              instr_get_opcode(inst) == OP_b) &&
             opnd_is_instr(instr_get_target(inst)));
+# else
+    ASSERT_NOT_IMPLEMENTED(false);
+    return false;
 # endif /* X86/ARM */
 }
 
@@ -1135,7 +1138,7 @@ recreate_app_state_internal(dcontext_t *tdcontext, priv_mcontext_t *mcontext,
             mc->xdi = get_mcontext(tdcontext)->xdi;
         }
 #endif
-#ifdef ARM
+#ifdef AARCHXX
         /* dr_reg_stolen is holding DR's TLS on receiving a signal,
          * so we need put app's reg value into mcontext instead
          */
@@ -1659,8 +1662,8 @@ stress_test_recreate_state(dcontext_t *dcontext, fragment_t *f, instrlist_t *ili
     if (TEST(FRAG_IS_TRACE, f->flags)) {
         instrlist_clear_and_destroy(dcontext, ilist);
     }
-# elif defined(ARM)
-    /* FIXME i#1551: NYI on ARM */
+# else
+    /* FIXME i#1551, i#1569: NYI on ARM/AArch64 */
     ASSERT_NOT_IMPLEMENTED(false);
 # endif /* X86/ARM */
 }

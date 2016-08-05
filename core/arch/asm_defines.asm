@@ -57,11 +57,15 @@
 # define ARM
 #endif
 
+#if (defined(ARM_32) || defined(ARM_64)) && !defined(AARCHXX)
+# define AARCHXX
+#endif
+
 #if (defined(ARM) && defined(X64)) || (defined(AARCH64) && !defined(X64))
 # error ARM is only 32-bit; AARCH64 is 64-bit
 #endif
 
-#if (defined(ARM) || defined(AARCH64)) && defined(WINDOWS)
+#if defined(AARCHXX) && defined(WINDOWS)
 # error ARM/AArch64 on Windows is not supported
 #endif
 
@@ -102,7 +106,7 @@
 #  else
 #   define SYMREF(sym) [sym]
 #  endif
-# elif defined(ARM) || defined(AARCH64)
+# elif defined(AARCHXX)
 #  define BYTE /* nothing */
 #  define WORD /* nothing */
 #  define DWORD /* nothing */
@@ -303,7 +307,7 @@ ASSUME fs:_DATA @N@\
 # define PTRSZ DWORD
 #endif
 
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
 /* ARM AArch64 calling convention:
  * SP:       stack pointer
  * x30(LR):  link register
@@ -355,6 +359,17 @@ ASSUME fs:_DATA @N@\
 # define ARG8_NORETADDR  ARG8
 # define ARG9_NORETADDR  ARG9
 # define ARG10_NORETADDR ARG10
+
+# ifndef AARCH64
+#  define FP r11
+#  define INDJMP bx
+#  define REG_PRESERVED_1 r4
+# else
+#  define FP x29
+#  define INDJMP br
+#  define REG_PRESERVED_1 x19
+# endif
+
 #else /* Intel X86 */
 # ifdef X64
 #  ifdef WINDOWS
@@ -665,7 +680,7 @@ ASSUME fs:_DATA @N@\
 # define RETURN   ret
 # define INC(reg) inc reg
 # define DEC(reg) dec reg
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
 # define REG_SCRATCH0 REG_R0
 # define REG_SCRATCH1 REG_R1
 # define REG_SCRATCH2 REG_R2

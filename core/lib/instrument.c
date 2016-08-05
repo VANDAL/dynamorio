@@ -4522,7 +4522,7 @@ dr_set_tls_field(void *drcontext, void *value)
 DR_API void *
 dr_get_dr_segment_base(IN reg_id_t seg)
 {
-#ifdef ARM
+#ifdef AARCHXX
     if (seg == dr_reg_stolen)
         return os_get_dr_tls_base(get_thread_private_dcontext());
     else
@@ -5320,7 +5320,8 @@ static const reg_id_t SPILL_SLOT_MC_REG[NUM_SPILL_SLOTS - NUM_TLS_SPILL_SLOTS] =
     REG_R15, REG_R14, REG_R13, REG_R12, REG_R11, REG_R10, REG_R9, REG_R8,
 # endif
     REG_XDI, REG_XSI, REG_XBP, REG_XDX, REG_XCX, REG_XBX
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
+    /* DR_REG_R0 is not used here. See prepare_for_clean_call. */
     DR_REG_R6, DR_REG_R5, DR_REG_R4, DR_REG_R3, DR_REG_R2, DR_REG_R1
 #endif /* X86/ARM */
 };
@@ -5649,9 +5650,12 @@ dr_save_arith_flags_to_reg(void *drcontext, instrlist_t *ilist,
                              opnd_create_reg(reg),
                              opnd_create_reg(DR_REG_CPSR)));
 #elif defined(AARCH64)
-    (void)dcontext;
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
-#endif /* X86/ARM */
+    /* flag saving code: mrs reg, nzcv */
+    MINSERT(ilist, where,
+            INSTR_CREATE_mrs(dcontext,
+                             opnd_create_reg(reg),
+                             opnd_create_reg(DR_REG_NZCV)));
+#endif /* X86/ARM/AARCH64 */
 }
 
 DR_API void
@@ -5684,9 +5688,11 @@ dr_restore_arith_flags_from_reg(void *drcontext, instrlist_t *ilist,
                              opnd_create_reg(reg)));
 #elif defined(AARCH64)
     /* flag restoring code: mrs reg, nzcv */
-    (void)dcontext;
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
-#endif /* X86/ARM */
+    MINSERT(ilist, where,
+            INSTR_CREATE_msr(dcontext,
+                             opnd_create_reg(DR_REG_NZCV),
+                             opnd_create_reg(reg)));
+#endif /* X86/ARM/AARCH64 */
 }
 
 /* providing functionality of old -instr_calls and -instr_branches flags
@@ -7151,7 +7157,7 @@ dr_insert_get_stolen_reg_value(void *drcontext, instrlist_t *ilist,
                   "dr_insert_get_stolen_reg: reg has wrong size\n");
     CLIENT_ASSERT(!reg_is_stolen(reg),
                   "dr_insert_get_stolen_reg: reg is used by DynamoRIO\n");
-#ifdef ARM
+#ifdef AARCHXX
     instrlist_meta_preinsert
         (ilist, instr,
          instr_create_restore_from_tls(drcontext, reg, TLS_REG_STOLEN_SLOT));
@@ -7169,7 +7175,7 @@ dr_insert_set_stolen_reg_value(void *drcontext, instrlist_t *ilist,
                   "dr_insert_set_stolen_reg: reg has wrong size\n");
     CLIENT_ASSERT(!reg_is_stolen(reg),
                   "dr_insert_set_stolen_reg: reg is used by DynamoRIO\n");
-#ifdef ARM
+#ifdef AARCHXX
     instrlist_meta_preinsert
         (ilist, instr,
          instr_create_save_to_tls(drcontext, reg, TLS_REG_STOLEN_SLOT));
@@ -7587,37 +7593,37 @@ dr_unregister_persist_patch(bool (*func_patch)(void *drcontext, void *perscxt,
 DR_API
 /* Create instructions for storing pointer-size integer val to dst,
  * and then insert them into ilist prior to where.
- * The created instructions are returned in first and second.
+ * The "first" and "last" created instructions are returned.
  */
 void
 instrlist_insert_mov_immed_ptrsz(void *drcontext, ptr_int_t val, opnd_t dst,
                                  instrlist_t *ilist, instr_t *where,
-                                 instr_t **first OUT, instr_t **second OUT)
+                                 OUT instr_t **first, OUT instr_t **last)
 {
     CLIENT_ASSERT(opnd_get_size(dst) == OPSZ_PTR, "wrong dst size");
     insert_mov_immed_ptrsz((dcontext_t *)drcontext, val, dst,
-                           ilist, where, first, second);
+                           ilist, where, first, last);
 }
 
 DR_API
 /* Create instructions for pushing pointer-size integer val on the stack,
  * and then insert them into ilist prior to where.
- * The created instructions are returned in first and second.
+ * The "first" and "last" created instructions are returned.
  */
 void
 instrlist_insert_push_immed_ptrsz(void *drcontext, ptr_int_t val,
                                   instrlist_t *ilist, instr_t *where,
-                                  instr_t **first OUT, instr_t **second OUT)
+                                  OUT instr_t **first, OUT instr_t **last)
 {
     insert_push_immed_ptrsz((dcontext_t *)drcontext, val, ilist, where,
-                            first, second);
+                            first, last);
 }
 
 DR_API
 void
 instrlist_insert_mov_instr_addr(void *drcontext, instr_t *src_inst, byte *encode_pc,
                                 opnd_t dst, instrlist_t *ilist, instr_t *where,
-                                instr_t **first OUT, instr_t **second OUT)
+                                OUT instr_t **first, OUT instr_t **last)
 {
     CLIENT_ASSERT(opnd_get_size(dst) == OPSZ_PTR, "wrong dst size");
     if (encode_pc == NULL) {
@@ -7628,14 +7634,14 @@ instrlist_insert_mov_instr_addr(void *drcontext, instr_t *src_inst, byte *encode
         encode_pc = vmcode_get_end();
     }
     insert_mov_instr_addr((dcontext_t *)drcontext, src_inst, encode_pc, dst,
-                           ilist, where, first, second);
+                           ilist, where, first, last);
 }
 
 DR_API
 void
 instrlist_insert_push_instr_addr(void *drcontext, instr_t *src_inst, byte *encode_pc,
                                  instrlist_t *ilist, instr_t *where,
-                                 instr_t **first OUT, instr_t **second OUT)
+                                 OUT instr_t **first, OUT instr_t **last)
 {
     if (encode_pc == NULL) {
         /* Pass highest code cache address.
@@ -7645,7 +7651,7 @@ instrlist_insert_push_instr_addr(void *drcontext, instr_t *src_inst, byte *encod
         encode_pc = vmcode_get_end();
     }
     insert_push_instr_addr((dcontext_t *)drcontext, src_inst, encode_pc,
-                           ilist, where, first, second);
+                           ilist, where, first, last);
 }
 
 

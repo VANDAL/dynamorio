@@ -208,13 +208,15 @@ typedef struct _clone_record_t {
     thread_sig_info_t info;
     thread_sig_info_t *parent_info;
     void *pcprofile_info;
-#ifdef ARM
+#ifdef AARCHXX
     /* To ensure we have the right value as of the point of the clone, we
      * store it here (we'll have races if we try to get it during new thread
      * init).
      */
     reg_t app_stolen_value;
+# ifndef AARCH64
     dr_isa_mode_t isa_mode;
+# endif
     /* To ensure we have the right app lib tls base in child thread,
      * we store it here if necessary (clone w/o CLONE_SETTLS or vfork).
      */
@@ -559,9 +561,11 @@ create_clone_record(dcontext_t *dcontext, reg_t *app_thread_xsp)
     record->info = *((thread_sig_info_t *)dcontext->signal_field);
     record->parent_info = (thread_sig_info_t *) dcontext->signal_field;
     record->pcprofile_info = dcontext->pcprofile_field;
-#ifdef ARM
+#ifdef AARCHXX
     record->app_stolen_value = get_stolen_reg_val(get_mcontext(dcontext));
+# ifndef AARCH64
     record->isa_mode = dr_get_isa_mode(dcontext);
+# endif
     /* If the child thread shares the same TLS with parent by not setting
      * CLONE_SETTLS or vfork, we put the TLS base here and clear the
      * thread register in new_thread_setup, so that DR can distinguish
@@ -668,7 +672,7 @@ get_clone_record_dstack(void *record)
     return ((clone_record_t *) record)->dstack;
 }
 
-#ifdef ARM
+#ifdef AARCHXX
 reg_t
 get_clone_record_stolen_value(void *record)
 {
@@ -676,12 +680,14 @@ get_clone_record_stolen_value(void *record)
     return ((clone_record_t *) record)->app_stolen_value;
 }
 
+# ifndef AARCH64
 uint /* dr_isa_mode_t but we have a header ordering problem */
 get_clone_record_isa_mode(void *record)
 {
     ASSERT(record != NULL);
     return ((clone_record_t *) record)->isa_mode;
 }
+# endif
 
 void
 set_thread_register_from_clone_record(void *record)
@@ -691,7 +697,7 @@ set_thread_register_from_clone_record(void *record)
      * thread register.
      */
     if (((clone_record_t *)record)->app_lib_tls_base != NULL)
-        dynamorio_syscall(SYS_set_tls, 1, NULL);
+        write_thread_register(NULL);
 }
 
 void
@@ -1911,6 +1917,10 @@ sig_full_initialize(sig_full_cxt_t *sc_full, kernel_ucontext_t *ucxt)
     sc_full->fp_simd_state = NULL; /* we have a ptr inside sigcontext_t */
 #elif defined(ARM)
     sc_full->fp_simd_state = &ucxt->coproc.uc_vfp;
+#elif defined(AARCH64)
+    sc_full->fp_simd_state = &ucxt->uc_mcontext.__reserved;
+#else
+    ASSERT_NOT_IMPLEMENTED(false);
 #endif
 }
 
@@ -1941,8 +1951,10 @@ sigcontext_to_mcontext(priv_mcontext_t *mc, sig_full_cxt_t *sc_full)
     mc->r15 = sc->SC_FIELD(r15);
 # endif /* X64 */
 #elif defined(AARCH64)
-    (void)sc;
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
+    memcpy(&mc->r0, &sc->SC_FIELD(regs[0]), sizeof(mc->r0) * 31);
+    mc->sp = sc->SC_FIELD(sp);
+    mc->pc = (void *)sc->SC_FIELD(pc);
+    mc->nzcv = sc->SC_FIELD(pstate);
 #elif defined (ARM)
     mc->r0  = sc->SC_FIELD(arm_r0);
     mc->r1  = sc->SC_FIELD(arm_r1);
@@ -2010,8 +2022,10 @@ mcontext_to_sigcontext(sig_full_cxt_t *sc_full, priv_mcontext_t *mc)
     sc->SC_FIELD(r15) = mc->r15;
 # endif /* X64 */
 #elif defined(AARCH64)
-    (void)sc;
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
+    memcpy(&sc->SC_FIELD(regs[0]), &mc->r0, sizeof(mc->r0) * 31);
+    sc->SC_FIELD(sp) = mc->sp;
+    sc->SC_FIELD(pc) = (ptr_uint_t)mc->pc;
+    sc->SC_FIELD(pstate) = mc->nzcv;
 #elif defined(ARM)
     sc->SC_FIELD(arm_r0)  = mc->r0;
     sc->SC_FIELD(arm_r1)  = mc->r1;
@@ -2053,7 +2067,7 @@ mcontext_to_ucontext(kernel_ucontext_t *uc, priv_mcontext_t *mc)
     mcontext_to_sigcontext(&sc_full, mc);
 }
 
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
 static void
 set_sigcxt_stolen_reg(sigcontext_t *sc, reg_t val)
 {
@@ -2066,7 +2080,7 @@ get_sigcxt_stolen_reg(sigcontext_t *sc)
     return *(&sc->SC_R0 + (dr_reg_stolen - DR_REG_R0));
 }
 
-# ifdef ARM
+# ifndef AARCH64
 static dr_isa_mode_t
 get_pc_mode_from_cpsr(sigcontext_t *sc)
 {
@@ -2248,12 +2262,16 @@ sig_has_restorer(thread_sig_info_t *info, int sig)
         static const byte SIGRET_RT[8] =
           {0xad, 0x70, 0xa0, 0xe3, 0x00, 0x00, 0x00, 0xef};
 # elif defined(AARCH64)
-        /* FIXME i#1569 */
-        static const byte SIGRET_NONRT[8] = { 0 };
-        static const byte SIGRET_RT[8] = { 0 };
-        ASSERT_NOT_IMPLEMENTED(false);
+        static const byte SIGRET_NONRT[8] = { 0 }; /* unused */
+        static const byte SIGRET_RT[8] =
+          /* FIXME i#1569: untested */
+          /* mov w8, #139 ; svc #0 */
+          {0x68, 0x11, 0x80, 0x52, 0x01, 0x00, 0x00, 0xd4};
 # endif
         byte buf[MAX(sizeof(SIGRET_NONRT), sizeof(SIGRET_RT))]= {0};
+# ifdef AARCH64
+        ASSERT_NOT_TESTED(); /* See SIGRET_RT, above. */
+# endif
         if (safe_read(info->app_sigaction[sig]->restorer, sizeof(buf), buf) &&
             ((IS_RT_FOR_APP(info, sig) &&
               memcmp(buf, SIGRET_RT, sizeof(SIGRET_RT)) == 0) ||
@@ -2314,6 +2332,8 @@ get_sigcontext_from_app_frame(thread_sig_info_t *info, int sig, void *frame)
         sc = (sigcontext_t *) &(((sigframe_plain_t *)frame)->sc);
 # elif defined(ARM)
         sc = SIGCXT_FROM_UCXT(&(((sigframe_plain_t *)frame)->uc));
+# else
+        ASSERT_NOT_REACHED();
 # endif
     }
 #endif
@@ -2543,15 +2563,19 @@ fixup_rtframe_pointers(dcontext_t *dcontext, int sig,
         LOG(THREAD, LOG_ASYNCH, level+1, "\tno fpstate needed\n");
     }
     LOG(THREAD, LOG_ASYNCH, level, "\tretaddr = "PFX"\n", f_new->pretcode);
-#  ifdef RETURN_AFTER_CALL
+# ifdef RETURN_AFTER_CALL
     info->signal_restorer_retaddr = (app_pc) f_new->pretcode;
-#  endif
+# endif
     /* 32-bit kernel copies to aligned buf first */
     IF_X64(ASSERT(ALIGNED(f_new->uc.uc_mcontext.fpstate, 16)));
-# elif defined(MACOS)
+#elif defined(MACOS)
+# ifndef X64
+    f_new->pinfo = &(f_new->info);
+    f_new->puc = &(f_new->uc);
+# endif
     f_new->puc->uc_mcontext = (IF_X64_ELSE(_STRUCT_MCONTEXT64, _STRUCT_MCONTEXT32) *)
         &f_new->mc;
-    LOG(THREAD, LOG_ASYNCH, 3, "\tf_new="PFX", handler="PFX"\n", f_new, &f_new->handler);
+    LOG(THREAD, LOG_ASYNCH, 3, "\tf_new="PFX", &handler="PFX"\n", f_new, &f_new->handler);
     ASSERT(!for_app || ALIGNED(&f_new->handler, 16));
 #endif /* X86 && LINUX */
 }
@@ -2780,10 +2804,6 @@ transfer_from_sig_handler_to_fcache_return(dcontext_t *dcontext, sigcontext_t *s
     dcontext->next_tag = canonicalize_pc_target(dcontext, next_pc);
     IF_ARM(dr_set_isa_mode(dcontext, get_pc_mode_from_cpsr(sc), NULL));
 
-#ifdef AARCH64
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
-#endif
-
     /* Set our sigreturn context to point to fcache_return!
      * Then we'll go back through kernel, appear in fcache_return,
      * and go through dispatch & interp, without messing up dynamo stack.
@@ -2791,7 +2811,7 @@ transfer_from_sig_handler_to_fcache_return(dcontext_t *dcontext, sigcontext_t *s
      * still go to the private fcache_return for simplicity.
      */
     sc->SC_XIP = (ptr_uint_t) fcache_return_routine(dcontext);
-#ifdef ARM
+#ifdef AARCHXX
     /* We do not have to set dr_reg_stolen in dcontext's mcontext here
      * because dcontext's mcontext is stale and we used the mcontext
      * created from recreate_app_state_internal with the original sigcontext.
@@ -2802,14 +2822,20 @@ transfer_from_sig_handler_to_fcache_return(dcontext_t *dcontext, sigcontext_t *s
      */
     ASSERT(get_sigcxt_stolen_reg(sc) != (reg_t) *get_dr_tls_base_addr());
     set_sigcxt_stolen_reg(sc, (reg_t) *get_dr_tls_base_addr());
+# ifndef AARCH64
     /* We're going to our fcache_return gencode which uses DEFAULT_ISA_MODE */
     set_pc_mode_in_cpsr(sc, DEFAULT_ISA_MODE);
+# endif
 #endif
 
 #if defined(X64) || defined(ARM)
     /* x64 always uses shared gencode */
     get_local_state_extended()->spill_space.IF_X86_ELSE(xax, r0) =
         sc->IF_X86_ELSE(SC_XAX, SC_R0);
+# ifdef AARCH64
+    /* X1 needs to be spilled because of br x1 in exit stubs. */
+    get_local_state_extended()->spill_space.r1 = sc->SC_R1;
+# endif
 #else
     get_mcontext(dcontext)->IF_X86_ELSE(xax, r0) = sc->IF_X86_ELSE(SC_XAX, SC_R0);
 #endif
@@ -3139,7 +3165,7 @@ interrupted_inlined_syscall(dcontext_t *dcontext, fragment_t *f,
             nxt_pc = decode(dcontext, pc - syslen, &instr);
             if (nxt_pc != NULL && instr_valid(&instr) &&
                 instr_is_syscall(&instr)) {
-#if !defined(ARM) && !defined(MACOS)
+#if defined(X86) && !defined(MACOS)
                 /* decoding backward so check for exit cti jmp prior
                  * to syscall to ensure no mismatch
                  */
@@ -3209,16 +3235,17 @@ adjust_syscall_for_restart(dcontext_t *dcontext, thread_sig_info_t *info, int si
         instr_init(dcontext, &instr);
         pc = FCACHE_ENTRY_PC(f);
         do {
+            ptr_int_t val;
             DOLOG(3, LOG_ASYNCH, {
                 disassemble_with_bytes(dcontext, pc, THREAD);
             });
             instr_reset(dcontext, &instr);
             pc = decode(dcontext, pc, &instr);
-            if (instr_get_opcode(&instr) == IF_X86_ELSE(OP_mov_imm, OP_mov) &&
+            if (instr_is_mov_constant(&instr, &val) &&
                 opnd_is_reg(instr_get_dst(&instr, 0)) &&
-                opnd_get_reg(instr_get_dst(&instr, 0)) == DR_REG_SYSNUM &&
-                opnd_is_immed_int(instr_get_src(&instr, 0))) {
-                sysnum = (int) opnd_get_immed_int(instr_get_src(&instr, 0));
+                reg_to_pointer_sized(opnd_get_reg(instr_get_dst(&instr, 0))) ==
+                reg_to_pointer_sized(DR_REG_SYSNUM)) {
+                sysnum = (int) val;
                 /* don't break: find last one before syscall */
             }
         } while (pc != NULL && instr_valid(&instr) && !instr_is_syscall(&instr) &&
@@ -3237,12 +3264,14 @@ adjust_syscall_for_restart(dcontext_t *dcontext, thread_sig_info_t *info, int si
     }
 #ifdef X86
     sc->SC_SYSNUM_REG = sysnum;
-#elif defined(ARM)
+#elif defined(AARCHXX)
     /* We just need to restore the app's arg to the syscall into r0, which
      * the kernel clobbered with -EINTR.  We stored r0 into TLS.
      */
     sc->SC_R0 = (reg_t) get_tls(os_tls_offset(TLS_REG0_SLOT));
     LOG(THREAD, LOG_ASYNCH, 2, "%s: restored r0 to "PFX"\n", __FUNCTION__, sc->SC_R0);
+#else
+# error NYI
 #endif
 
     /* Now adjust the pc to point at the syscall instruction instead of after it,
@@ -4507,9 +4536,7 @@ execute_handler_from_cache(dcontext_t *dcontext, int sig, sigframe_rt_t *our_fra
     sc->SC_XDI = sig;
     sc->SC_XSI = (reg_t) &((sigframe_rt_t *)xsp)->info;
     sc->SC_XDX = (reg_t) &((sigframe_rt_t *)xsp)->uc;
-#elif defined(AARCH64)
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
-#elif defined(ARM)
+#elif defined(AARCHXX)
     sc->SC_R0 = sig;
     if (IS_RT_FOR_APP(info, sig)) {
         sc->SC_R1 = (reg_t) &((sigframe_rt_t *)xsp)->info;
@@ -4519,8 +4546,10 @@ execute_handler_from_cache(dcontext_t *dcontext, int sig, sigframe_rt_t *our_fra
         sc->SC_LR = (reg_t) info->app_sigaction[sig]->restorer;
     else
         sc->SC_LR = (reg_t) dynamorio_sigreturn;
+# ifndef AARCH64
     /* We're going to our fcache_return gencode which uses DEFAULT_ISA_MODE */
     set_pc_mode_in_cpsr(sc, DEFAULT_ISA_MODE);
+# endif
 #endif
     /* Set our sigreturn context (NOT for the app: we already copied the
      * translated context to the app stack) to point to fcache_return!
@@ -4720,7 +4749,7 @@ execute_handler_from_dispatch(dcontext_t *dcontext, int sig)
     mcontext->xdi = sig;
     mcontext->xsi = (reg_t) &((sigframe_rt_t *)xsp)->info;
     mcontext->xdx = (reg_t) &((sigframe_rt_t *)xsp)->uc;
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
     mcontext->r0 = sig;
     if (IS_RT_FOR_APP(info, sig)) {
         mcontext->r1 = (reg_t) &((sigframe_rt_t *)xsp)->info;
@@ -5156,11 +5185,20 @@ handle_sigreturn(dcontext_t *dcontext, void *ucxt_param, int style)
         /* The initial frame fields on the stack are messed up due to
          * params to handler from tramp, so use params to syscall.
          * XXX: we don't have signal # though: so we have to rely on app
-         * not clobbering the param field.
+         * not clobbering the sig param field.
          */
         sig = *(int*)xsp;
         LOG(THREAD, LOG_ASYNCH, 3, "\tsignal was %d\n", sig);
         ucxt = (kernel_ucontext_t *) ucxt_param;
+        if (ucxt == NULL) {
+            /* On Mac the kernel seems to store state on whether the process is
+             * on the altstack, so longjmp calls _sigunaltstack() which issues a
+             * sigreturn syscall telling the kernel about the altstack change,
+             * with a NULL context.
+             */
+            LOG(THREAD, LOG_ASYNCH, 3, "\tsigunalstack sigreturn: no context\n");
+            return true;
+        }
         sc = SIGCXT_FROM_UCXT(ucxt);
 #endif
         ASSERT(sig > 0 && sig <= MAX_SIGNUM && IS_RT_FOR_APP(info, sig));
@@ -5196,18 +5234,18 @@ handle_sigreturn(dcontext_t *dcontext, void *ucxt_param, int style)
         ASSERT(sig > 0 && sig <= MAX_SIGNUM && !IS_RT_FOR_APP(info, sig));
         sc = get_sigcontext_from_app_frame(info, sig, (void *) frame);
         /* discard blocked signals, re-set from prev mask stored in frame */
-#ifdef AARCH64
+# ifdef AARCH64
         ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
-#else
+# else
         prevset.sig[0] = frame->IF_X86_ELSE(sc.oldmask, uc.uc_mcontext.oldmask);
         if (_NSIG_WORDS > 1) {
             memcpy(&prevset.sig[1], &frame->IF_X86_ELSE(extramask, uc.sigset_ex),
                    sizeof(prevset.sig[1]));
         }
-#endif
+# endif
         set_blocked(dcontext, &prevset, true/*absolute*/);
     }
-#endif
+#endif /* LINUX */
 
     /* Make sure we deliver pending signals that are now unblocked.
      */
@@ -5285,13 +5323,16 @@ handle_sigreturn(dcontext_t *dcontext, void *ucxt_param, int style)
      * look like whatever would happen to the app...
      */
     ASSERT((app_pc)sc->SC_XIP != next_pc);
-# if defined(ARM) || defined(AARCH64)
-#  ifdef AARCH64
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
-#  endif
+# ifdef AARCHXX
     set_stolen_reg_val(get_mcontext(dcontext), get_sigcxt_stolen_reg(sc));
     set_sigcxt_stolen_reg(sc, (reg_t) *get_dr_tls_base_addr());
-#  ifndef AARCH64
+#  ifdef AARCH64
+    /* On entry to the do_syscall gencode, we save X1 into TLS_REG1_SLOT.
+     * Then the sigreturn would redirect the flow to the fcache_return gencode.
+     * In fcache_return it recovers the values of x0 and x1 from TLS_SLOT 0 and 1.
+     */
+    get_mcontext(dcontext)->r1 = sc->regs[1];
+#  else
     /* We're going to our fcache_return gencode which uses DEFAULT_ISA_MODE */
     set_pc_mode_in_cpsr(sc, DEFAULT_ISA_MODE);
 #  endif
@@ -6070,7 +6111,7 @@ handle_suspend_signal(dcontext_t *dcontext, kernel_ucontext_t *ucxt)
             asm("movl $1,(%"ASM_XAX")");
             asm("jmp dynamorio_futex_wake_and_exit");
 # endif
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
             asm("ldr "ASM_R0", %0" : : "m"(term));
             asm("mov "ASM_R1", #1");
             asm("str "ASM_R1",["ASM_R0"]");

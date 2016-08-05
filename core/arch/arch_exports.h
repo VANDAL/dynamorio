@@ -125,7 +125,7 @@ typedef struct _table_stat_state_t {
 #endif
 } table_stat_state_t;
 
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
 typedef struct _ibl_entry_pc_t {
     byte *ibl;
     byte *unlinked;
@@ -140,13 +140,13 @@ typedef struct _spill_state_t {
     /* Four registers are used in the indirect branch lookup routines */
 #ifdef X86
     reg_t xax, xbx, xcx, xdx;    /* general-purpose registers */
-#elif defined (ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
     reg_t r0, r1, r2, r3;
     reg_t reg_stolen;            /* slot for the stolen register */
 #endif
     /* FIXME: move this below the tables to fit more on cache line */
     dcontext_t *dcontext;
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
     /* We store addresses here so we can load pointer-sized addresses into
      * registers with a single instruction in our exit stubs and gencode.
      */
@@ -184,7 +184,7 @@ typedef struct _local_state_extended_t {
 # define SCRATCH_REG1             DR_REG_XBX
 # define SCRATCH_REG2             DR_REG_XCX
 # define SCRATCH_REG3             DR_REG_XDX
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
 # define TLS_REG0_SLOT            ((ushort)offsetof(spill_state_t, r0))
 # define TLS_REG1_SLOT            ((ushort)offsetof(spill_state_t, r1))
 # define TLS_REG2_SLOT            ((ushort)offsetof(spill_state_t, r2))
@@ -198,7 +198,7 @@ typedef struct _local_state_extended_t {
 #define IBL_TARGET_REG           SCRATCH_REG2
 #define IBL_TARGET_SLOT          TLS_REG2_SLOT
 #define TLS_DCONTEXT_SLOT        ((ushort)offsetof(spill_state_t, dcontext))
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
 # define TLS_FCACHE_RETURN_SLOT  ((ushort)offsetof(spill_state_t, fcache_return))
 #endif
 
@@ -551,24 +551,23 @@ DEF_ATOMIC_ADD(ATOMIC_ADD_int64, int64, "x")
 
 #  define ATOMIC_ADD(type, var, val) ATOMIC_ADD_##type(&var, val)
 
-#  define DEF_atomic_add_exchange(fname, type, r)                     \
+#  define DEF_ATOMIC_ADD_EXCHANGE(fname, type, reg)                   \
 static inline type fname(volatile type *var, type val)                \
 {                                                                     \
-    type tmp1, ret;                                                   \
-    int tmp2;                                                         \
+    type ret;                                                         \
+    int tmp;                                                          \
     __asm__ __volatile__(                                             \
-      "1: ldxr  %"r"0, [%x3]           \n\t"                          \
-      "   add   %"r"0, %"r"0, %"r"4    \n\t"                          \
-      "   stxr  %w1, %"r"0, [%x3]      \n\t"                          \
-      "   cbnz  %w1, 1b                \n\t"                          \
-      "   sub   %"r"2, %"r"0, %"r"4    \n\t"                          \
-      : "=&r" (tmp1), "=&r" (tmp2), "=r" (ret)                        \
+      "1: ldxr  %"reg"1, [%x2]             \n\t"                      \
+      "   add   %"reg"1, %"reg"1, %"reg"3  \n\t"                      \
+      "   stxr  %w0, %"reg"1, [%x2]        \n\t"                      \
+      "   cbnz  %w0, 1b                    \n\t"                      \
+      : "=&r" (tmp), "=&r" (ret)                                      \
       : "r" (var), "r" (val));                                        \
     return ret;                                                       \
 }
-DEF_atomic_add_exchange(atomic_add_exchange_int  , int  , "w")
-DEF_atomic_add_exchange(atomic_add_exchange_int64, int64, "x")
-#  undef DEF_atomic_add_exchange
+DEF_ATOMIC_ADD_EXCHANGE(atomic_add_exchange_int  , int  , "w")
+DEF_ATOMIC_ADD_EXCHANGE(atomic_add_exchange_int64, int64, "x")
+#  undef DEF_ATOMIC_ADD_EXCHANGE
 
 #  define atomic_add_exchange atomic_add_exchange_int
 
@@ -620,17 +619,17 @@ uint64 proc_get_timestamp(void);
 
 static inline bool atomic_inc_and_test(volatile int *var)
 {
-    return atomic_add_exchange_int(var, 1) == -1;
+    return atomic_add_exchange_int(var, 1) == 0;
 }
 
 static inline bool atomic_dec_and_test(volatile int *var)
 {
-    return atomic_add_exchange_int(var, -1) == 0;
+    return atomic_add_exchange_int(var, -1) == -1;
 }
 
 static inline bool atomic_dec_becomes_zero(volatile int *var)
 {
-    return atomic_add_exchange_int(var, -1) == 1;
+    return atomic_add_exchange_int(var, -1) == 0;
 }
 
 # elif defined(ARM)
@@ -960,7 +959,7 @@ void arch_thread_exit(dcontext_t *dcontext _IF_WINDOWS(bool detach_stacked_callb
 void arch_thread_profile_exit(dcontext_t *dcontext);
 void arch_profile_exit(void);
 #endif
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
 void arch_reset_stolen_reg(void);
 void arch_mcontext_reset_stolen_reg(dcontext_t *dcontext, priv_mcontext_t *mc);
 #endif
@@ -978,7 +977,7 @@ priv_mcontext_t *dr_mcontext_as_priv_mcontext(dr_mcontext_t *mc);
 priv_mcontext_t *get_priv_mcontext_from_dstack(dcontext_t *dcontext);
 void dr_mcontext_init(dr_mcontext_t *mc);
 void dump_mcontext(priv_mcontext_t *context, file_t f, bool dump_xml);
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
 reg_t get_stolen_reg_val(priv_mcontext_t *context);
 void set_stolen_reg_val(priv_mcontext_t *mc, reg_t newval);
 #endif
@@ -1463,7 +1462,7 @@ decode_init(void);
 # define MAX_PAD_SIZE 3
 
 /****************************************************************************/
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
 
 # ifdef X64
 #  define FRAG_IS_THUMB(flags) false
@@ -1741,9 +1740,15 @@ enum {
 #endif
 
     /* Not under defines so we can have code that is less cluttered */
+#ifdef AARCH64
+    INT_LENGTH = 4,
+    SYSCALL_LENGTH = 4,
+    SYSENTER_LENGTH = 4,
+#else
     INT_LENGTH = 2,
     SYSCALL_LENGTH = 2,
     SYSENTER_LENGTH = 2,
+#endif
 };
 
 #define REL32_REACHABLE_OFFS(offs) ((offs) <= INT_MAX && (offs) >= INT_MIN)
@@ -2103,10 +2108,12 @@ typedef struct dr_jmp_buf_t {
     reg_t r8, r9, r10, r11, r12, r13, r14, r15;
 # endif
 #elif defined(ARM) /* for arm.asm */
-    reg_t regs[16/*DR_NUM_GPR_REGS*/];
+# define       REGS_IN_JMP_BUF 26 /* See dr_setjmp and dr_longjmp. */
+    reg_t regs[REGS_IN_JMP_BUF];
 #elif defined(AARCH64) /* for aarch64.asm */
-    reg_t regs[22]; /* callee-save regs: X19-X30, (gap), SP, D8-D15 */
-#endif /* X86/ARM */
+# define       REGS_IN_JMP_BUF 22 /* See dr_setjmp and dr_longjmp. */
+    reg_t regs[REGS_IN_JMP_BUF];
+#endif /* X86/AARCH64/ARM */
 #if defined(UNIX) && defined(DEBUG)
     /* i#226/PR 492568: we avoid the cost of storing this by using the
      * mask in the fault's signal frame, but we do record it in debug

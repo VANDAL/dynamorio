@@ -42,10 +42,17 @@ START_FILE
 # error Non-Unix is not supported
 #endif
 
+/* sizeof(priv_mcontext_t) rounded up to a multiple of 16 */
+#define PRIV_MCONTEXT_SIZE 800
+
+/* offsetof(priv_mcontext_t, simd) */
+#define simd_OFFSET (16 * ARG_SZ*2 + 32)
 /* offsetof(dcontext_t, dstack) */
-#define dstack_OFFSET     0x360
+#define dstack_OFFSET     0x368
 /* offsetof(dcontext_t, is_exiting) */
 #define is_exiting_OFFSET (dstack_OFFSET+1*ARG_SZ)
+/* offsetof(struct tlsdesc_t, arg */
+#define tlsdesc_arg_OFFSET 8
 
 #ifndef X64
 # error X64 must be defined
@@ -54,24 +61,6 @@ START_FILE
 #if defined(UNIX)
 DECL_EXTERN(dr_setjmp_sigmask)
 #endif
-
-#ifdef UNIX
-# if !defined(STANDALONE_UNIT_TEST) && !defined(STATIC_LIBRARY)
-        DECLARE_FUNC(_start)
-GLOBAL_LABEL(_start:)
-        mov      x29, #0   /* clear frame ptr for stack trace bottom */
-        CALLC2(GLOBAL_REF(relocate_dynamorio), #0, #0)
-        CALLC3(GLOBAL_REF(privload_early_inject), sp, #0, #0)
-        /* shouldn't return */
-        bl       GLOBAL_REF(unexpected_return)
-        END_FUNC(_start)
-
-        DECLARE_FUNC(xfer_to_new_libdr)
-GLOBAL_LABEL(xfer_to_new_libdr:)
-        bl       GLOBAL_REF(unexpected_return) /* FIXME i#1569: NYI */
-        END_FUNC(xfer_to_new_libdr)
-# endif /* !STANDALONE_UNIT_TEST && !STATIC_LIBRARY */
-#endif /* UNIX */
 
 /* All CPU ID registers are accessible only in privileged modes. */
         DECLARE_FUNC(cpuid_supported)
@@ -114,9 +103,46 @@ call_dispatch_alt_stack_no_free:
         END_FUNC(call_switch_stack)
 
 #ifdef CLIENT_INTERFACE
+/*
+ * Calls the specified function 'func' after switching to the DR stack
+ * for the thread corresponding to 'drcontext'.
+ * Passes in 8 arguments.  Uses the C calling convention, so 'func' will work
+ * just fine even if if takes fewer than 8 args.
+ * Swaps the stack back upon return and returns the value returned by 'func'.
+ *
+ * void * dr_call_on_clean_stack(void *drcontext,
+ *                               void *(*func)(arg1...arg8),
+ *                               void *arg1,
+ *                               void *arg2,
+ *                               void *arg3,
+ *                               void *arg4,
+ *                               void *arg5,
+ *                               void *arg6,
+ *                               void *arg7,
+ *                               void *arg8)
+ */
         DECLARE_EXPORTED_FUNC(dr_call_on_clean_stack)
 GLOBAL_LABEL(dr_call_on_clean_stack:)
-        bl       GLOBAL_REF(unexpected_return) /* FIXME i#1569: NYI */
+        /* We know that there are two arguments on stack. */
+        stp      x29, x30, [sp, #-16]! /* Save frame pointer and link register. */
+        mov      x29, sp /* Save sp across the call. */
+        /* Swap stacks. */
+        ldr      x30, [x0, #dstack_OFFSET]
+        mov      sp, x30
+        /* Set up args. */
+        mov      x30, x1 /* void *(*func)(arg1...arg8) */
+        mov      x0, x2  /* void *arg1 */
+        mov      x1, x3  /* void *arg2 */
+        mov      x2, x4  /* void *arg3 */
+        mov      x3, x5  /* void *arg4 */
+        mov      x4, x6  /* void *arg5 */
+        mov      x5, x7  /* void *arg6 */
+        ldp      x6, x7, [x29, #(2 * ARG_SZ)]   /* void *arg7, *arg8 */
+        blr      x30
+        /* Swap stacks. */
+        mov      sp, x29
+        ldp      x29, x30, [sp], #16
+        ret
         END_FUNC(dr_call_on_clean_stack)
 #endif /* CLIENT_INTERFACE */
 
@@ -130,7 +156,7 @@ GLOBAL_LABEL(dr_app_start:)
 
         DECLARE_EXPORTED_FUNC(dr_app_take_over)
 GLOBAL_LABEL(dr_app_take_over:)
-        bl       GLOBAL_REF(unexpected_return) /* FIXME i#1569: NYI */
+        b        GLOBAL_REF(dynamorio_app_take_over)
         END_FUNC(dr_app_take_over)
 
         DECLARE_EXPORTED_FUNC(dr_app_running_under_dynamorio)
@@ -141,7 +167,48 @@ GLOBAL_LABEL(dr_app_running_under_dynamorio:)
 
         DECLARE_EXPORTED_FUNC(dynamorio_app_take_over)
 GLOBAL_LABEL(dynamorio_app_take_over:)
-        bl       GLOBAL_REF(unexpected_return) /* FIXME i#1569: NYI */
+        /* Save FP and LR for the case that DR is not taking over. */
+        stp      x29, x30, [sp, #-16]!
+        /* Build a priv_mcontext_t on the stack. */
+        sub      sp, sp, #PRIV_MCONTEXT_SIZE
+        stp      x0, x1, [sp, #(0 * ARG_SZ*2)]
+        stp      x2, x3, [sp, #(1 * ARG_SZ*2)]
+        stp      x4, x5, [sp, #(2 * ARG_SZ*2)]
+        stp      x6, x7, [sp, #(3 * ARG_SZ*2)]
+        stp      x8, x9, [sp, #(4 * ARG_SZ*2)]
+        stp      x10, x11, [sp, #(5 * ARG_SZ*2)]
+        stp      x12, x13, [sp, #(6 * ARG_SZ*2)]
+        stp      x14, x15, [sp, #(7 * ARG_SZ*2)]
+        stp      x16, x17, [sp, #(8 * ARG_SZ*2)]
+        stp      x18, x19, [sp, #(9 * ARG_SZ*2)]
+        stp      x20, x21, [sp, #(10 * ARG_SZ*2)]
+        stp      x22, x23, [sp, #(11 * ARG_SZ*2)]
+        stp      x24, x25, [sp, #(12 * ARG_SZ*2)]
+        stp      x26, x27, [sp, #(13 * ARG_SZ*2)]
+        stp      x28, x29, [sp, #(14 * ARG_SZ*2)]
+        add      x0, sp, #(PRIV_MCONTEXT_SIZE + 16) /* compute original SP */
+        stp      x30, x0, [sp, #(15 * ARG_SZ*2)]
+        str      x30, [sp, #(16 * ARG_SZ*2)] /* save LR as PC */
+        mrs      x1, nzcv
+        mrs      x2, fpcr
+        mrs      x3, fpsr
+        str      w1, [sp, #(16 * ARG_SZ*2 + 8)]
+        str      w2, [sp, #(16 * ARG_SZ*2 + 12)]
+        str      w3, [sp, #(16 * ARG_SZ*2 + 16)]
+        add      x4, sp, #simd_OFFSET
+        st1      {v0.2d-v3.2d}, [x4], #64
+        st1      {v4.2d-v7.2d}, [x4], #64
+        st1      {v8.2d-v11.2d}, [x4], #64
+        st1      {v12.2d-v15.2d}, [x4], #64
+        st1      {v16.2d-v19.2d}, [x4], #64
+        st1      {v20.2d-v23.2d}, [x4], #64
+        st1      {v24.2d-v27.2d}, [x4], #64
+        st1      {v28.2d-v31.2d}, [x4], #64
+        CALLC1(GLOBAL_REF(dynamorio_app_take_over_helper), sp)
+        /* If we get here, DR is not taking over. */
+        add      sp, sp, #PRIV_MCONTEXT_SIZE
+        ldp      x29, x30, [sp], #16
+        ret
         END_FUNC(dynamorio_app_take_over)
 
 /*
@@ -194,8 +261,7 @@ cat_no_thread:
         adrp     x26, :got:initstack_mutex
         ldr      x26, [x26, #:got_lo12:initstack_mutex]
 cat_spin:
-        CALLC2(atomic_xchg, x26, #1)
-        /* atomic_xchg */
+        CALLC2(atomic_swap, x26, #1)
         cbz      w0, cat_have_lock
         yield
         b        cat_spin
@@ -239,15 +305,6 @@ GLOBAL_LABEL(atomic_add:)
         add      w2, w2, w1
         stxr     w3, w2, [x0]
         cbnz     w3, 1b
-        ret
-
-        /* int atomic_xchg(int *adr, int val) */
-        DECLARE_FUNC(atomic_xchg)
-GLOBAL_LABEL(atomic_xchg:)
-1:      ldxr     w2, [x0]
-        stxr     w3, w1, [x0]
-        cbnz     w3, 1b
-        mov      w0, w2
         ret
 
         DECLARE_FUNC(global_do_syscall_int)
@@ -332,12 +389,19 @@ GLOBAL_LABEL(memset:)
 
 #ifdef CLIENT_INTERFACE
 
+/* Xref x86.asm dr_try_start about calling dr_setjmp without a call frame.
+ *
+ * int dr_try_start(try_except_context_t *cxt) ;
+ */
         DECLARE_EXPORTED_FUNC(dr_try_start)
 GLOBAL_LABEL(dr_try_start:)
-        bl       GLOBAL_REF(unexpected_return) /* FIXME i#1569: NYI */
+        add      ARG1, ARG1, #TRY_CXT_SETJMP_OFFS
+        b        GLOBAL_REF(dr_setjmp)
         END_FUNC(dr_try_start)
 
-/* We save only the callee-save registers: X19-X30, (gap), SP, D8-D15.
+/* We save only the callee-saved registers: X19-X30, (gap), SP, D8-D15:
+ * a total of 22 reg_t (64-bit) slots. See definition of dr_jmp_buf_t.
+ * The gap is for better alignment of the D registers.
  *
  * int dr_setjmp(dr_jmp_buf_t *buf);
  */
@@ -385,9 +449,14 @@ GLOBAL_LABEL(dr_longjmp:)
         br       x30
         END_FUNC(dr_longjmp)
 
+        /* int atomic_swap(int *adr, int val) */
         DECLARE_FUNC(atomic_swap)
 GLOBAL_LABEL(atomic_swap:)
-        bl       GLOBAL_REF(unexpected_return) /* FIXME i#1569: NYI */
+1:      ldxr     w2, [x0]
+        stxr     w3, w1, [x0]
+        cbnz     w3, 1b
+        mov      w0, w2
+        ret
         END_FUNC(atomic_swap)
 
 #endif /* CLIENT_INTERFACE */
@@ -430,11 +499,6 @@ GLOBAL_LABEL(dynamorio_sys_exit:)
         svc      #0
         bl       GLOBAL_REF(unexpected_return)
         END_FUNC(dynamorio_sys_exit)
-
-        DECLARE_FUNC(dynamorio_futex_wake_and_exit)
-GLOBAL_LABEL(dynamorio_futex_wake_and_exit:)
-        bl       GLOBAL_REF(unexpected_return) /* FIXME i#1569: NYI */
-        END_FUNC(dynamorio_futex_wake_and_exit)
 
 # ifndef NOT_DYNAMORIO_CORE_PROPER
 
@@ -503,5 +567,19 @@ GLOBAL_LABEL(cache_sync_asm:)
         isb      /* Instruction Synchronization Barrier */
         ret
         END_FUNC(cache_sync_asm)
+
+/* A static resolver for TLS descriptors, implemented in assembler as
+ * it does not use the standard calling convention. In C, it could be:
+ *
+ * ptrdiff_t
+ * tlsdesc_resolver(struct tlsdesc_t *tlsdesc)
+ * {
+ *     return (ptrdiff_t)tlsdesc->arg;
+ * }
+ */
+        DECLARE_FUNC(tlsdesc_resolver)
+GLOBAL_LABEL(tlsdesc_resolver:)
+        ldr     x0,[x0,#tlsdesc_arg_OFFSET]
+        ret
 
 END_FILE

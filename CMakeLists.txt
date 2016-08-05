@@ -245,6 +245,7 @@ else ()
 endif ()
 
 if (ARM OR AARCH64)
+  set(AARCHXX 1)
   set(ARCH_NAME_SHARED aarchxx)
 else ()
   set(ARCH_NAME_SHARED ${ARCH_NAME})
@@ -264,6 +265,11 @@ if (CMAKE_C_SIZEOF_DATA_PTR EQUAL 8)
 else(CMAKE_C_SIZEOF_DATA_PTR EQUAL 8)
   set(X64 OFF)
 endif (CMAKE_C_SIZEOF_DATA_PTR EQUAL 8)
+
+if (APPLE AND X64)
+  # XXX #1979: 64-bit OSX is not supported.
+  message(FATAL_ERROR "64-bit Mac OSX is not supported")
+endif ()
 
 option(VMKERNEL "target VMkernel (not officially supported yet)")
 

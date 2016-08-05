@@ -35,7 +35,7 @@
 #include "instr.h"
 #include "decode.h"
 #include "disassemble.h"
-#include "decode_private.h"
+#include "codec.h"
 
 /* Extra logging for encoding */
 #define ENC_LEVEL 6
@@ -44,6 +44,38 @@
 const char * const reg_names[] = {
     "<NULL>",
     "<invalid>",
+    "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
+    "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
+    "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
+    "x24", "x25", "x26", "x27", "x28", "x29", "x30",
+    "sp", "xzr",
+    "w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7",
+    "w8", "w9", "w10", "w11", "w12", "w13", "w14", "w15",
+    "w16", "w17", "w18", "w19", "w20", "w21", "w22", "w23",
+    "w24", "w25", "w26", "w27", "w28", "w29", "w30",
+    "wsp", "wzr",
+    "q0", "q1", "q2", "q3", "q4", "q5", "q6", "q7",
+    "q8", "q9", "q10", "q11", "q12", "q13", "q14", "q15",
+    "q16", "q17", "q18", "q19", "q20", "q21", "q22", "q23",
+    "q24", "q25", "q26", "q27", "q28", "q29", "q30", "q31",
+    "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7",
+    "d8", "d9", "d10", "d11", "d12", "d13", "d14", "d15",
+    "d16", "d17", "d18", "d19", "d20", "d21", "d22", "d23",
+    "d24", "d25", "d26", "d27", "d28", "d29", "d30", "d31",
+    "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
+    "s8", "s9", "s10", "s11", "s12", "s13", "s14", "s15",
+    "s16", "s17", "s18", "s19", "s20", "s21", "s22", "s23",
+    "s24", "s25", "s26", "s27", "s28", "s29", "s30", "s31",
+    "h0", "h1", "h2", "h3", "h4", "h5", "h6", "h7",
+    "h8", "h9", "h10", "h11", "h12", "h13", "h14", "h15",
+    "h16", "h17", "h18", "h19", "h20", "h21", "h22", "h23",
+    "h24", "h25", "h26", "h27", "h28", "h29", "h30", "h31",
+    "b0", "b1", "b2", "b3", "b4", "b5", "b6", "b7",
+    "b8", "b9", "b10", "b11", "b12", "b13", "b14", "b15",
+    "b16", "b17", "b18", "b19", "b20", "b21", "b22", "b23",
+    "b24", "b25", "b26", "b27", "b28", "b29", "b30", "b31",
+    "nzcv", "fpcr", "fpsr",
+    "tpidr_el0", "tpidrro_el0"
 };
 
 /* Maps sub-registers to their containing register. */
@@ -60,9 +92,10 @@ const reg_id_t dr_reg_fixer[] = {
     DR_REG_X16, DR_REG_X17,  DR_REG_X18,  DR_REG_X19, \
     DR_REG_X20, DR_REG_X21,  DR_REG_X22,  DR_REG_X23, \
     DR_REG_X24, DR_REG_X25,  DR_REG_X26,  DR_REG_X27, \
-    DR_REG_X28, DR_REG_X29,  DR_REG_X30,  DR_REG_X31,
-XREGS /* X0-X31 */
-XREGS /* W0-W31 */
+    DR_REG_X28, DR_REG_X29,  DR_REG_X30, \
+    DR_REG_XSP, DR_REG_XZR,
+XREGS /* X0-XSP */
+XREGS /* W0-WSP */
 #undef XREGS
 
 #define QREGS \
@@ -104,121 +137,6 @@ void
 decode_info_init_for_instr(decode_info_t *di, instr_t *instr)
 {
     ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
-}
-
-/* FIXME i#1569: Very incomplete encoder.
- * Temporary solution until a proper (table-driven) encoder is implemented.
- * SP (stack pointer) and ZR (zero register) may be confused.
- */
-static uint encode_common(byte *pc, instr_t *i)
-{
-    ptr_uint_t off;
-    ASSERT(((ptr_int_t)pc & 3) == 0);
-    switch (i->opcode) {
-    case OP_b:
-    case OP_bl:
-        ASSERT(i->num_dsts == 0 && i->num_srcs == 1 &&
-               i->src0.kind == PC_kind);
-        return (0x14000000 | (uint)(i->opcode == OP_bl) << 31 |
-                (0x3ffffff & (uint)(i->src0.value.pc - pc) >> 2));
-    case OP_bcond:
-        ASSERT(i->num_dsts == 0 && i->num_srcs == 1 &&
-               i->src0.kind == PC_kind);
-        return (0x54000000 |
-                (0x001fffff & (uint)(i->src0.value.pc - pc)) >> 2 << 5 |
-                (instr_get_predicate(i) & 0xf));
-    case OP_cbnz:
-    case OP_cbz:
-        ASSERT(i->num_dsts == 0 && i->num_srcs == 2 &&
-               (i->src0.kind == PC_kind || i->src0.kind == INSTR_kind) &&
-               i->srcs[0].kind == REG_kind && i->srcs[0].size == 0 &&
-               ((uint)(i->srcs[0].value.reg - DR_REG_W0) < 32 ||
-                (uint)(i->srcs[0].value.reg - DR_REG_X0) < 32));
-        off = ((i->src0.kind == PC_kind) ?
-               (uint)(i->src0.value.pc - pc) :
-               (ptr_int_t)(opnd_get_instr(i->src0)->note - i->note));
-        return (0x34000000 | (i->opcode == OP_cbnz) << 24 |
-                (uint)((uint)(i->srcs[0].value.reg - DR_REG_X0) < 32) << 31 |
-                (0x001fffff & off) >> 2 << 5 |
-                ((i->srcs[0].value.reg - DR_REG_X0) < 32 ?
-                 (i->srcs[0].value.reg - DR_REG_X0) :
-                 (i->srcs[0].value.reg - DR_REG_W0)));
-    case OP_load:
-        ASSERT(i->num_dsts == 1 && i->num_srcs == 1 &&
-               i->dsts[0].kind == REG_kind && i->dsts[0].size == 0 &&
-               i->src0.kind == BASE_DISP_kind &&
-               i->src0.value.base_disp.index_reg == DR_REG_NULL);
-        if (reg_is_gpr(i->dsts[0].value.reg)) {
-            uint rt = (i->dsts[0].value.reg -
-                       (i->src0.size == OPSZ_8 ? DR_REG_X0 : DR_REG_W0));
-            ASSERT(i->src0.size == OPSZ_4 || i->src0.size == OPSZ_8);
-            ASSERT(rt < 31);
-            return ((i->src0.size == OPSZ_8 ? 0xf9400000 : 0xb9400000 ) |
-                    rt |
-                    (i->src0.value.base_disp.base_reg - DR_REG_X0) << 5 |
-                    i->src0.value.base_disp.disp >>
-                    (i->src0.size == OPSZ_8 ? 3 : 2 ) << 10);
-        } else {
-            uint rt = (i->dsts[0].value.reg -
-                       (i->src0.size == OPSZ_4 ? DR_REG_S0 :
-                        i->src0.size == OPSZ_8 ? DR_REG_D0 : DR_REG_Q0));
-            ASSERT(i->src0.size == OPSZ_4 || i->src0.size == OPSZ_8 ||
-                   i->src0.size == OPSZ_16);
-            ASSERT(rt < 32);
-            return ((i->src0.size == OPSZ_4 ? 0xbd400000 :
-                     i->src0.size == OPSZ_8 ? 0xfd400000 : 0x3dc00000) |
-                    rt |
-                    (i->src0.value.base_disp.base_reg - DR_REG_X0) << 5 |
-                    i->src0.value.base_disp.disp >>
-                    (i->src0.size == OPSZ_4 ? 2 :
-                     i->src0.size == OPSZ_8 ? 3 : 4 ) << 10);
-         }
-    case OP_mov:
-        ASSERT(i->num_dsts == 1 && i->num_srcs == 1 &&
-               i->dsts[0].kind == REG_kind && i->dsts[0].size == 0 &&
-               i->src0.kind == REG_kind && i->src0.size == 0);
-        return (0xaa0003e0 |
-                (i->dsts[0].value.reg - DR_REG_X0) |
-                (i->src0.value.reg - DR_REG_X0) << 16);
-    case OP_store:
-        ASSERT(i->num_dsts == 1 && i->num_srcs == 1 &&
-               i->src0.kind == REG_kind && i->src0.size == 0 &&
-               i->dsts[0].kind == BASE_DISP_kind &&
-               (i->dsts[0].size == OPSZ_4 || i->dsts[0].size == OPSZ_8) &&
-               i->dsts[0].value.base_disp.index_reg == DR_REG_NULL);
-        return ((i->dsts[0].size == OPSZ_8 ? 0xf9000000 : 0xb9000000 ) |
-                (i->src0.value.reg - DR_REG_X0) |
-                (i->dsts[0].value.base_disp.base_reg - DR_REG_X0) << 5 |
-                i->dsts[0].value.base_disp.disp >>
-                (i->dsts[0].size == OPSZ_8 ? 3 : 2 ) << 10);
-    case OP_svc:
-        ASSERT(i->num_dsts == 0 && i->num_srcs == 1 &&
-               i->src0.kind == IMMED_INTEGER_kind);
-        return (0xd4000001 | (i->src0.value.immed_int & 0xffff) << 5);
-    case OP_tbnz:
-    case OP_tbz:
-        ASSERT(i->num_dsts == 0 && i->num_srcs == 3 &&
-               (i->src0.kind == PC_kind || i->src0.kind == INSTR_kind) &&
-               i->srcs[0].kind == REG_kind && i->srcs[0].size == 0 &&
-               (uint)(i->srcs[0].value.reg - DR_REG_X0) < 32 &&
-               i->srcs[1].kind == IMMED_INTEGER_kind);
-        off = ((i->src0.kind == PC_kind) ?
-               (uint)(i->src0.value.pc - pc) :
-               (ptr_int_t)(opnd_get_instr(i->src0)->note - i->note));
-        return (0x36000000 | (i->opcode == OP_tbnz) << 24 |
-                (0xffff & off) >> 2 << 5 |
-                (i->srcs[0].value.reg - DR_REG_X0) |
-                (i->srcs[1].value.immed_int & 31) << 19 |
-                (i->srcs[1].value.immed_int & 32) << 26);
-    case OP_xx:
-        return i->src0.value.immed_int;
-
-    default:
-        ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
-    case OP_add:
-        /* FIXME i#1569: These are encoded but never executed. */
-        return i->opcode;
-    }
 }
 
 byte *

@@ -34,7 +34,6 @@
 #include "arch.h"
 #include "instr.h"
 #include "decode.h"
-#include "decode_private.h"
 #include "disassemble.h"
 #include <string.h>
 
@@ -44,7 +43,7 @@ int
 print_bytes_to_buffer(char *buf, size_t bufsz, size_t *sofar INOUT,
                       byte *pc, byte *next_pc, instr_t *instr)
 {
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
+    print_to_buffer(buf, bufsz, sofar, " %08x   ", *(uint *)pc);
     return 0;
 }
 
@@ -66,7 +65,6 @@ opnd_base_disp_scale_disassemble(char *buf, size_t bufsz, size_t *sofar INOUT,
 bool
 opnd_disassemble_arch(char *buf, size_t bufsz, size_t *sofar INOUT, opnd_t opnd)
 {
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
     return false;
 }
 
@@ -84,15 +82,13 @@ void
 print_instr_prefixes(dcontext_t *dcontext, instr_t *instr,
                      char *buf, size_t bufsz, size_t *sofar INOUT)
 {
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
-    return;
 }
 
 void
 print_opcode_name(instr_t *instr, const char *name,
                   char *buf, size_t bufsz, size_t *sofar INOUT)
 {
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
+    print_to_buffer(buf, bufsz, sofar, "%s", name);
 }
 
 #endif /* INTERNAL || DEBUG || CLIENT_INTERFACE */

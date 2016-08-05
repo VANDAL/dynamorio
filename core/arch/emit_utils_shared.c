@@ -792,7 +792,7 @@ coarse_indirect_stub_jmp_target(cache_pc stub)
     ASSERT(*prefix_tgt == JMP_OPCODE);
     tgt = (cache_pc) PC_RELATIVE_TARGET(prefix_tgt+1);
     return tgt;
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
     /* FIXME i#1551, i#1569: NYI on ARM/AArch64 */
     ASSERT_NOT_IMPLEMENTED(false);
     return NULL;
@@ -1876,11 +1876,6 @@ append_jmp_to_fcache_target(dcontext_t *dcontext, instrlist_t *ilist,
              * ldr x0, [x28]
              */
             APP(ilist, INSTR_CREATE_xx(dcontext, 0xf9400380));
-            /* Subtract 4 to include the fragment prefix,
-             * which restores X0 from TLS_REG1_SLOT:
-             * sub x0, x0, #4
-             */
-            APP(ilist, INSTR_CREATE_xx(dcontext, 0xd1000000 | 4 << 10));
             /* br x0 */
             APP(ilist, INSTR_CREATE_xx(dcontext, 0xd61f0000));
 #else
@@ -3371,7 +3366,7 @@ instr_t *
 create_syscall_instr(dcontext_t *dcontext)
 {
     int method = get_syscall_method();
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
     if (method == SYSCALL_METHOD_SVC || method == SYSCALL_METHOD_UNINITIALIZED) {
         return INSTR_CREATE_svc(dcontext, opnd_create_immed_int((char)0x0, OPSZ_1));
     }
@@ -4578,13 +4573,29 @@ emit_do_syscall_common(dcontext_t *dcontext, generated_code_t *code,
     /* initialize the ilist */
     instrlist_init(&ilist);
 
-#ifdef ARM
+#ifdef AARCH64
+    /* We will call this from handle_system_call, so need prefix on AArch64. */
+    APP(&ilist, instr_create_restore_from_tls(dcontext, ENTRY_PC_REG,
+                                              ENTRY_PC_SPILL_SLOT));
+    /* XXX: should have a proper patch list entry */
+    *syscall_offs += AARCH64_INSTR_SIZE;
+#endif
+
+#if defined(ARM)
     /* We have to save r0 in case the syscall is interrupted.  We can't
      * easily do this from dispatch b/c fcache_enter clobbers some TLS slots.
      */
     APP(&ilist, instr_create_save_to_tls(dcontext, DR_REG_R0, TLS_REG0_SLOT));
     /* XXX: should have a proper patch list entry */
     *syscall_offs += THUMB_LONG_INSTR_SIZE;
+#elif defined(AARCH64)
+    /* For AArch64, we need to save both x0 and x1 into SLOT 0 and SLOT 1
+     * in case the syscall is interrupted. See append_save_gpr.
+     * stp x0, x1, [x28]
+     */
+    APP(&ilist, INSTR_CREATE_xx(dcontext, 0xa9000000 | 0 | 1 << 10 |
+                                (dr_reg_stolen - DR_REG_X0) << 5));
+    *syscall_offs += AARCH64_INSTR_SIZE;
 #endif
 
     /* system call itself -- using same method we've observed OS using */
@@ -4619,6 +4630,12 @@ emit_do_syscall_common(dcontext_t *dcontext, generated_code_t *code,
     else
         APP(&ilist, instr_create_save_to_dcontext(dcontext, SCRATCH_REG0,
                                                   SCRATCH_REG0_OFFS));
+
+#ifdef AARCH64
+    /* Save X1 as this is used for the indirect branch in the exit stub. */
+    APP(&ilist, instr_create_save_to_tls(dcontext, SCRATCH_REG1, TLS_REG1_SLOT));
+#endif
+
     insert_mov_immed_ptrsz(dcontext, (ptr_int_t)get_syscall_linkstub(),
                            opnd_create_reg(SCRATCH_REG0), &ilist, NULL, NULL, NULL);
     APP(&ilist, XINST_CREATE_jump(dcontext, opnd_create_pc(fcache_return_pc)));
@@ -4901,6 +4918,7 @@ decode_syscall_num(dcontext_t *dcontext, byte *entry)
         if (instr_num_dsts(&instr) > 0 &&
             opnd_is_reg(instr_get_dst(&instr, 0)) &&
             opnd_get_reg(instr_get_dst(&instr, 0)) == SCRATCH_REG0) {
+#ifndef AARCH64 /* FIXME i#1569: recognise "move" on AArch64 */
             if (instr_get_opcode(&instr) == IF_X86_ELSE(OP_mov_imm, OP_mov)) {
                 IF_X64(ASSERT_TRUNCATE(int, int,
                                        opnd_get_immed_int(instr_get_src(&instr, 0))));
@@ -4908,6 +4926,7 @@ decode_syscall_num(dcontext_t *dcontext, byte *entry)
                 LOG(GLOBAL, LOG_EMIT, 3, "\tfound syscall num: 0x%x\n", syscall);
                 break;
             } else
+#endif
                 break; /* give up gracefully */
         }
     }
@@ -4950,6 +4969,7 @@ emit_new_thread_dynamo_start(dcontext_t *dcontext, byte *pc)
                                         * a race w/ the parent's use of it!
                                         */
                                        SCRATCH_REG0);
+#ifndef AARCH64
     /* put pre-push xsp into priv_mcontext_t.xsp slot */
     ASSERT(offset == sizeof(priv_mcontext_t));
     APP(&ilist, XINST_CREATE_add_2src
@@ -4959,7 +4979,7 @@ emit_new_thread_dynamo_start(dcontext_t *dcontext, byte *pc)
         (dcontext, OPND_CREATE_MEMPTR(REG_XSP, offsetof(priv_mcontext_t, xsp)),
          opnd_create_reg(SCRATCH_REG0)));
 
-#ifdef X86
+# ifdef X86
     /* We avoid get_thread_id syscall in get_thread_private_dcontext()
      * by clearing the segment register here (cheaper check than syscall)
      * (xref PR 192231).  If we crash prior to this point though, the
@@ -4970,12 +4990,19 @@ emit_new_thread_dynamo_start(dcontext_t *dcontext, byte *pc)
         (dcontext, opnd_create_reg(REG_AX), OPND_CREATE_INT16(0)));
     APP(&ilist, INSTR_CREATE_mov_seg
         (dcontext, opnd_create_reg(SEG_TLS), opnd_create_reg(REG_AX)));
-#endif
+# endif
 
     /* stack grew down, so priv_mcontext_t at tos */
     APP(&ilist, XINST_CREATE_move
         (dcontext, opnd_create_reg(SCRATCH_REG0), opnd_create_reg(REG_XSP)));
-
+#else
+    /* For AArch64, SP was already saved by insert_push_all_registers and
+     * pointing to priv_mcontext_t. Move sp to the first argument:
+     * mov x0, sp
+     */
+    APP(&ilist, XINST_CREATE_move(dcontext, opnd_create_reg(DR_REG_X0),
+                                  opnd_create_reg(DR_REG_XSP)));
+#endif
     dr_insert_call_noreturn(dcontext, &ilist, NULL, (void *)new_thread_setup,
                             1, opnd_create_reg(SCRATCH_REG0));
 
@@ -5134,6 +5161,35 @@ special_ibl_xfer_is_thread_private(void)
 #endif
 }
 
+#ifdef AARCHXX
+size_t
+get_ibl_entry_tls_offs(dcontext_t *dcontext, cache_pc ibl_entry)
+{
+    spill_state_t state;
+    byte *local;
+    ibl_type_t ibl_type = {0};
+    /* FIXME i#1551: add Thumb support: ARM vs Thumb gencode */
+    DEBUG_DECLARE(bool is_ibl = )
+        get_ibl_routine_type_ex(dcontext, ibl_entry, &ibl_type);
+    ASSERT(is_ibl);
+    /* FIXME i#1575: coarse-grain NYI on ARM/AArch64 */
+    ASSERT(ibl_type.source_fragment_type != IBL_COARSE_SHARED);
+    if (IS_IBL_TRACE(ibl_type.source_fragment_type)) {
+        if (IS_IBL_LINKED(ibl_type.link_state))
+            local = (byte *) &state.trace_ibl[ibl_type.branch_type].ibl;
+        else
+            local = (byte *) &state.trace_ibl[ibl_type.branch_type].unlinked;
+    } else {
+        ASSERT(IS_IBL_BB(ibl_type.source_fragment_type));
+        if (IS_IBL_LINKED(ibl_type.link_state))
+            local = (byte *) &state.bb_ibl[ibl_type.branch_type].ibl;
+        else
+            local = (byte *) &state.bb_ibl[ibl_type.branch_type].unlinked;
+    }
+    return (local - (byte *) &state);
+}
+#endif
+
 /* emit the special_ibl trampoline code for transferring the control flow to
  * ibl lookup
  * - index: the index of special_ibl array to be emitted to
@@ -5151,6 +5207,11 @@ emit_special_ibl_xfer(dcontext_t *dcontext, byte *pc, generated_code_t *code,
     instrlist_t ilist;
     patch_list_t patch;
     instr_t *in;
+    /* For AArch64 the linkstub has to be in X0 and the app's X0 has to be
+     * spilled in TLS_REG0_SLOT before calling the ibl routine.
+     */
+    reg_id_t stub_reg = IF_AARCH64_ELSE(SCRATCH_REG0, SCRATCH_REG1);
+    ushort stub_slot = IF_AARCH64_ELSE(TLS_REG0_SLOT, TLS_REG1_SLOT);
     IF_X86(size_t len;)
     byte *ibl_tgt = special_ibl_xfer_tgt(dcontext, code, IBL_LINKED, ibl_type);
     bool absolute = !code->thread_shared;
@@ -5163,9 +5224,9 @@ emit_special_ibl_xfer(dcontext_t *dcontext, byte *pc, generated_code_t *code,
         const linkstub_t *linkstub =
             get_special_ibl_linkstub(ibl_type,
                                      DYNAMO_OPTION(disable_traces) ? false : true);
-        APP(&ilist, SAVE_TO_TLS(dcontext, SCRATCH_REG1, TLS_REG1_SLOT));
+        APP(&ilist, SAVE_TO_TLS(dcontext, stub_reg, stub_slot));
         insert_mov_immed_ptrsz(dcontext, (ptr_int_t)linkstub,
-                               opnd_create_reg(SCRATCH_REG1),
+                               opnd_create_reg(stub_reg),
                                &ilist, NULL, NULL, NULL);
     }
 
@@ -5225,9 +5286,10 @@ emit_special_ibl_xfer(dcontext_t *dcontext, byte *pc, generated_code_t *code,
     }
     APP(&ilist, XINST_CREATE_jump(dcontext, opnd_create_pc(ibl_tgt)));
 #elif defined(AARCH64)
-    (void)ibl_tgt;
-    /* Random unallocated encoding to detect if code is excecuted: */
-    APP(&ilist, INSTR_CREATE_xx(dcontext, 0x801e04));
+    APP(&ilist, INSTR_CREATE_ldr(dcontext, opnd_create_reg(SCRATCH_REG1),
+                                 OPND_TLS_FIELD(get_ibl_entry_tls_offs
+                                                (dcontext, ibl_tgt))));
+    APP(&ilist, XINST_CREATE_jump_reg(dcontext, opnd_create_reg(SCRATCH_REG1)));
 #elif defined(ARM)
     /* i#1906: loads to PC must use word-aligned addresses */
     ASSERT(ALIGNED(get_ibl_entry_tls_offs(dcontext, ibl_tgt), PC_LOAD_ADDR_ALIGN));
@@ -5311,7 +5373,7 @@ byte *
 emit_clean_call_save(dcontext_t *dcontext, byte *pc, generated_code_t *code)
 {
     instrlist_t ilist;
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
     /* FIXME i#1551, i#1569:
      * NYI on ARM/AArch64 (no assert here, it's in get_clean_call_save())
      */

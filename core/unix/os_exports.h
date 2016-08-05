@@ -83,7 +83,7 @@
 #  define LIB_SEG_TLS SEG_GS /* libc+loader tls */
 #  define LIB_ASM_SEG "%gs"
 # endif
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
 /* The SEG_TLS is not preserved by all kernels (older 32-bit, or all 64-bit), so we
  * end up having to steal the app library TPID register for priv lib use.
  * When in DR state, we steal a field inside the priv lib TLS to store the DR base.
@@ -102,9 +102,17 @@
 #define TLS_REG_LIB  LIB_SEG_TLS  /* TLS reg commonly used by libraries in Linux */
 #define TLS_REG_ALT  SEG_TLS      /* spare TLS reg, used by DR in X86 Linux */
 
-#define DR_REG_SYSNUM IF_X86_ELSE(REG_EAX/* not XAX */, DR_REG_R7)
+#ifdef X86
+# define DR_REG_SYSNUM REG_EAX /* not XAX */
+#elif defined(ARM)
+# define DR_REG_SYSNUM DR_REG_R7
+#elif defined(AARCH64)
+# define DR_REG_SYSNUM DR_REG_X8
+#else
+# error NYI
+#endif
 
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
 # ifdef ANDROID
 /* We have our own slot at the end of our instance of Android's pthread_internal_t */
 #  ifdef AARCH64
@@ -212,7 +220,7 @@ bool disable_env(const char *name);
 #  define DECLARE_DATA_SECTION(name, wx) \
      asm(".section "name", \"a"wx"\", @progbits"); \
      asm(".align 0x1000");
-# elif defined(ARM) || defined(AARCH64)
+# elif defined(AARCHXX)
 #  define DECLARE_DATA_SECTION(name, wx) \
      asm(".section "name", \"a"wx"\""); \
      asm(".align 12"); /* 2^12 */
@@ -236,7 +244,7 @@ bool disable_env(const char *name);
      asm(".section .data"); \
      asm(".align 0x1000"); \
      asm(".text");
-# elif defined(ARM) || defined(AARCH64)
+# elif defined(AARCHXX)
 #  define END_DATA_SECTION_DECLARATIONS() \
      asm(".section .data"); \
      asm(".align 12"); \
@@ -266,6 +274,8 @@ extern app_pc vsyscall_page_start;
 extern app_pc vsyscall_syscall_end_pc;
 /* pc where kernel returns control after sysenter vsyscall */
 extern app_pc vsyscall_sysenter_return_pc;
+/* pc where our hook-displaced code was copied */
+extern app_pc vsyscall_sysenter_displaced_pc;
 #define VSYSCALL_PAGE_MAPS_NAME "[vdso]"
 
 bool is_thread_create_syscall(dcontext_t *dcontext);
@@ -362,12 +372,14 @@ get_clone_record_app_xsp(void *record);
 byte *
 get_clone_record_dstack(void *record);
 
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
 reg_t
 get_clone_record_stolen_value(void *record);
 
+# ifndef AARCH64
 uint /* dr_isa_mode_t but we have a header ordering problem */
 get_clone_record_isa_mode(void *record);
+# endif
 
 void
 set_thread_register_from_clone_record(void *record);

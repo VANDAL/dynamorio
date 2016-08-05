@@ -53,6 +53,9 @@
 #define OPND_CREATE_ABSMEM(addr, size) \
   opnd_create_rel_addr(addr, size)
 
+#define XINST_CREATE_cmp(dc, rn, rm_or_imm) \
+  ((void)(rn), (void)(rm_or_imm), INSTR_CREATE_xx((dc), 0xb7f3f1)) /* FIXME i#1569 */
+
 /**
  * Create an immediate integer operand. For AArch64 the size of an immediate
  * is ignored when encoding, so there is no need to specify the final size.
@@ -65,7 +68,7 @@
  * \param dc The void * dcontext used to allocate memory for the instr_t.
  */
 #define XINST_CREATE_debug_instr(dc) \
-  INSTR_CREATE_brk((dc), OPND_CREATE_INT16(1))
+  INSTR_CREATE_brk((dc), OPND_CREATE_INT16(0))
 
 /**
  * This platform-independent macro creates an instr_t for a 4-byte
@@ -101,7 +104,15 @@
  * \param d   The destination register opnd.
  * \param s   The source register opnd.
  */
-#define XINST_CREATE_move(dc, d, s) INSTR_CREATE_mov((dc), (d), (s))
+#define XINST_CREATE_move(dc, d, s) \
+  ((opnd_get_reg(d) == DR_REG_XSP || opnd_get_reg(s) == DR_REG_XSP || \
+    opnd_get_reg(d) == DR_REG_WSP || opnd_get_reg(s) == DR_REG_WSP) ? \
+   instr_create_1dst_4src((dc), OP_add, (d), (s), \
+                          OPND_CREATE_INT16(0), \
+                          OPND_CREATE_INT8(DR_SHIFT_LSL), OPND_CREATE_INT8(0)) : \
+   instr_create_1dst_4src((dc), OP_orr, (d), \
+     opnd_create_reg(opnd_get_size(d) == OPSZ_8 ? DR_REG_XZR : DR_REG_WZR), \
+                     (s), OPND_CREATE_INT8(DR_SHIFT_LSL), OPND_CREATE_INT8(0)))
 
 /**
  * This platform-independent macro creates an instr_t for a multimedia
@@ -128,7 +139,8 @@
  * \param r   The destination register opnd.
  * \param i   The source immediate integer opnd.
  */
-#define XINST_CREATE_load_int(dc, r, i) INSTR_CREATE_mov((dc), (r), (i))
+#define XINST_CREATE_load_int(dc, r, i) \
+  ((void)(r), (void)(i), INSTR_CREATE_xx((dc), 0xf36d19)) /* FIXME i#1569 */
 
 /**
  * This platform-independent macro creates an instr_t for a return instruction.
@@ -176,7 +188,9 @@
  * \param d  The opnd_t explicit destination operand for the instruction.
  * \param s  The opnd_t explicit source operand for the instruction.
  */
-#define XINST_CREATE_add(dc, d, s) INSTR_CREATE_add((dc), (d), (d), (s))
+#define XINST_CREATE_add(dc, d, s) \
+  INSTR_CREATE_add_shift((dc), (d), (d), (s), \
+    OPND_CREATE_INT8(DR_SHIFT_LSL), OPND_CREATE_INT8(0))
 
 /**
  * This platform-independent macro creates an instr_t for an addition
@@ -190,7 +204,8 @@
  * can be either a register or an immediate integer.
  */
 #define XINST_CREATE_add_2src(dc, d, s1, s2) \
-  INSTR_CREATE_add((dc), (d), (s1), (s2))
+  INSTR_CREATE_add_shift((dc), (d), (s1), (s2), \
+    OPND_CREATE_INT8(DR_SHIFT_LSL), OPND_CREATE_INT8(0))
 
 /**
  * This platform-independent macro creates an instr_t for a subtraction
@@ -199,7 +214,9 @@
  * \param d  The opnd_t explicit destination operand for the instruction.
  * \param s  The opnd_t explicit source operand for the instruction.
  */
-#define XINST_CREATE_sub(dc, d, s) INSTR_CREATE_sub((dc), (d), (d), (s))
+#define XINST_CREATE_sub(dc, d, s) \
+  INSTR_CREATE_sub_shift((dc), (d), (d), (s), \
+    OPND_CREATE_INT8(DR_SHIFT_LSL), OPND_CREATE_INT8(0))
 
 /**
  * This platform-independent macro creates an instr_t for a nop instruction.
@@ -211,21 +228,50 @@
  * Manually-added ARM-specific INSTR_CREATE_* macros
  */
 
-#define INSTR_CREATE_add(dc, Rd, Rn, Rm_or_imm) \
-  (opnd_is_reg(Rm_or_imm) ? \
-   INSTR_CREATE_add_shimm((dc), (Rd), (Rn), (Rm_or_imm), \
-     OPND_CREATE_INT8(DR_SHIFT_NONE), OPND_CREATE_INT8(0)) : \
-   instr_create_1dst_2src((dc), OP_add, (Rd), (Rn), (Rm_or_imm)))
+#define INSTR_CREATE_add(dc, rd, rn, rm_or_imm) \
+  INSTR_CREATE_add_shift(dc, rd, rn, rm_or_imm, \
+    OPND_CREATE_INT8(DR_SHIFT_LSL), OPND_CREATE_INT8(0))
+#define INSTR_CREATE_add_shift(dc, rd, rn, rm_or_imm, sht, sha) \
+  opnd_is_reg(rm_or_imm) ? \
+  instr_create_1dst_4src((dc), OP_add, (rd), (rn), \
+    opnd_create_reg_ex(opnd_get_reg(rm_or_imm), 0, DR_OPND_SHIFTED), \
+    opnd_add_flags((sht), DR_OPND_IS_SHIFT), (sha)) : \
+  instr_create_1dst_4src((dc), OP_add, (rd), (rn), (rm_or_imm), (sht), (sha))
+#define XINST_CREATE_and(dc, d, s) \
+  INSTR_CREATE_and_shift((dc), (d), (d), (s), \
+    OPND_CREATE_INT8(DR_SHIFT_LSL), OPND_CREATE_INT8(0))
+#define INSTR_CREATE_and_shift(dc, rd, rn, rm, sht, sha) \
+  instr_create_1dst_4src((dc), OP_and, (rd), (rn), \
+    opnd_create_reg_ex(opnd_get_reg(rm), 0, DR_OPND_SHIFTED), \
+    opnd_add_flags((sht), DR_OPND_IS_SHIFT), (sha))
 #define INSTR_CREATE_b(dc, pc) \
   instr_create_0dst_1src((dc), OP_b, (pc))
-#define INSTR_CREATE_br(dc, Xn) \
-  instr_create_0dst_1src((dc), OP_br, (Xn))
+#define INSTR_CREATE_br(dc, xn) \
+  instr_create_0dst_1src((dc), OP_br, (xn))
+#define INSTR_CREATE_blr(dc, xn) \
+  instr_create_0dst_1src((dc), OP_blr, (xn))
 #define INSTR_CREATE_brk(dc, imm) \
   instr_create_0dst_1src((dc), OP_brk, (imm))
+#define INSTR_CREATE_cbnz(dc, pc, reg) \
+  instr_create_0dst_2src((dc), OP_cbnz, (pc), (reg))
+#define INSTR_CREATE_cbz(dc, pc, reg) \
+  instr_create_0dst_2src((dc), OP_cbz, (pc), (reg))
 #define INSTR_CREATE_ldr(dc, Rd, mem) \
   instr_create_1dst_1src((dc), OP_ldr, (Rd), (mem))
-#define INSTR_CREATE_mov(dc, Rd, Rm_or_imm) \
-  instr_create_1dst_1src((dc), OP_mov, (Rd), (Rm_or_imm))
+/* FIXME i#1569: This is a temporary hack (like all uses of _xx). */
+#define INSTR_CREATE_movx(dc, t, rt, imm16, lsl) \
+  INSTR_CREATE_xx(dc, 0x12800000 | t << 29 | \
+                  ((uint)(opnd_get_reg(rt) - DR_REG_W0) < 31 ? \
+                   (opnd_get_reg(rt) - DR_REG_W0) : \
+                   (opnd_get_reg(rt) - DR_REG_X0) | 1U << 31) | \
+                  (opnd_get_immed_int(imm16) & 0xffff) << 5 | \
+                  (opnd_get_immed_int(lsl) >> 4 & 3) << 21)
+#define INSTR_CREATE_movk(dc, rt, imm16, lsl) \
+  INSTR_CREATE_movx(dc, 3, rt, imm16, lsl)
+#define INSTR_CREATE_movn(dc, rt, imm16, lsl) \
+  INSTR_CREATE_movx(dc, 0, rt, imm16, lsl)
+#define INSTR_CREATE_movz(dc, rt, imm16, lsl) \
+  INSTR_CREATE_movx(dc, 2, rt, imm16, lsl)
 #define INSTR_CREATE_mrs(dc, Xt, sysreg) \
   instr_create_1dst_1src((dc), OP_mrs, (Xt), (sysreg))
 #define INSTR_CREATE_msr(dc, sysreg, Xt) \
@@ -238,22 +284,23 @@
   instr_create_1dst_1src((dc), OP_str, (mem), (Rt))
 #define INSTR_CREATE_strh(dc, mem, Rt) \
   instr_create_1dst_1src((dc), OP_strh, (mem), (Rt))
-#define INSTR_CREATE_sub(dc, Rd, Rn, Rm_or_imm) \
-  (opnd_is_reg(Rm_or_imm) ? \
-   INSTR_CREATE_sub_shimm((dc), (Rd), (Rn), (Rm_or_imm), \
-     OPND_CREATE_INT8(DR_SHIFT_NONE), OPND_CREATE_INT8(0)) : \
-   instr_create_1dst_2src((dc), OP_sub, (Rd), (Rn), (Rm_or_imm)))
+#define INSTR_CREATE_sub(dc, rd, rn, rm_or_imm) \
+  INSTR_CREATE_sub_shift(dc, rd, rn, rm_or_imm, \
+    OPND_CREATE_INT8(DR_SHIFT_LSL), OPND_CREATE_INT8(0))
+#define INSTR_CREATE_sub_shift(dc, rd, rn, rm_or_imm, sht, sha) \
+  opnd_is_reg(rm_or_imm) ? \
+  instr_create_1dst_4src((dc), OP_sub, (rd), (rn), \
+    opnd_create_reg_ex(opnd_get_reg(rm_or_imm), 0, DR_OPND_SHIFTED), \
+    opnd_add_flags((sht), DR_OPND_IS_SHIFT), (sha)) : \
+  instr_create_1dst_4src((dc), OP_sub, (rd), (rn), (rm_or_imm), (sht), (sha))
 #define INSTR_CREATE_svc(dc, imm) \
   instr_create_0dst_1src((dc), OP_svc, (imm))
 
-#define INSTR_CREATE_add_shimm(dc, Rd, Rn, Rm, shift, imm) \
-  instr_create_1dst_4src((dc), OP_add, (Rd), (Rn), \
-  opnd_create_reg_ex(opnd_get_reg(Rm), 0, DR_OPND_SHIFTED), \
-  opnd_add_flags((shift), DR_OPND_IS_SHIFT), (imm))
-#define INSTR_CREATE_sub_shimm(dc, Rd, Rn, Rm, shift, imm) \
-  instr_create_1dst_4src((dc), OP_sub, (Rd), (Rn), \
-  opnd_create_reg_ex(opnd_get_reg(Rm), 0, DR_OPND_SHIFTED), \
-  opnd_add_flags((shift), DR_OPND_IS_SHIFT), (imm))
+/* FIXME i#1569: these two should perhaps not be provided */
+#define INSTR_CREATE_add_shimm(dc, rd, rn, rm_or_imm, sht, sha) \
+  INSTR_CREATE_add_shift(dc, rd, rn, rm_or_imm, sht, sha)
+#define INSTR_CREATE_sub_shimm(dc, rd, rn, rm_or_imm, sht, sha) \
+  INSTR_CREATE_sub_shift(dc, rd, rn, rm_or_imm, sht, sha)
 
 /* FIXME i#1569: replace all uses of this when there is a proper encoder */
 #define INSTR_CREATE_xx(dc, enc) \

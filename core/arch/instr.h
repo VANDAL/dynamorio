@@ -235,8 +235,8 @@ typedef enum _dr_pred_type_t {
 #ifdef X86
     DR_PRED_O,   /**< x86 condition: overflow (OF=1). */
     DR_PRED_NO,  /**< x86 condition: no overflow (OF=0). */
-    DR_PRED_B,   /**< x86 condition: below (CF=0). */
-    DR_PRED_NB,  /**< x86 condition: not below (CF=1). */
+    DR_PRED_B,   /**< x86 condition: below (CF=1). */
+    DR_PRED_NB,  /**< x86 condition: not below (CF=0). */
     DR_PRED_Z,   /**< x86 condition: zero (ZF=1). */
     DR_PRED_NZ,  /**< x86 condition: not zero (ZF=0). */
     DR_PRED_BE,  /**< x86 condition: below or equal (CF=1 or ZF=1). */
@@ -257,7 +257,7 @@ typedef enum _dr_pred_type_t {
      * unconditionally written, unlike regular destination operands.
      */
     DR_PRED_COMPLEX,
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
     DR_PRED_EQ, /**< ARM condition: 0000 Equal                   (Z == 1)           */
     DR_PRED_NE, /**< ARM condition: 0001 Not equal               (Z == 0)           */
     DR_PRED_CS, /**< ARM condition: 0010 Carry set               (C == 1)           */
@@ -2684,6 +2684,9 @@ bool instr_compute_address_VSIB(instr_t *instr, priv_mcontext_t *mc, size_t mc_s
                                 dr_mcontext_flags_t mc_flags, opnd_t curop, uint index,
                                 OUT bool *have_addr, OUT app_pc *addr, OUT bool *write);
 uint instr_branch_type(instr_t *cti_instr);
+#ifdef AARCH64
+const char *get_opcode_name(int opc);
+#endif
 /* these routines can assume that instr's opcode is valid */
 bool instr_is_call_arch(instr_t *instr);
 bool instr_is_cbr_arch(instr_t *instr);
@@ -2835,7 +2838,7 @@ enum {
     EFLAGS_ARITH = EFLAGS_CF|EFLAGS_PF|EFLAGS_AF|EFLAGS_ZF|EFLAGS_SF|EFLAGS_OF,
 };
 
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
 # define EFLAGS_READ_N      0x00000001 /**< Reads N (negative flag). */
 # define EFLAGS_READ_Z      0x00000002 /**< Reads Z (zero flag). */
 # define EFLAGS_READ_C      0x00000004 /**< Reads C (carry flag). */

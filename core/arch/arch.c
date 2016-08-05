@@ -427,7 +427,7 @@ shared_gencode_emit(generated_code_t *gencode _IF_X86_64(bool x86_mode))
     gencode->do_syscall = pc;
     pc = emit_do_syscall(GLOBAL_DCONTEXT, gencode, pc, gencode->fcache_return,
                          true/*shared*/, 0, &gencode->do_syscall_offs);
-# if defined(ARM) || defined(AARCH64)
+# ifdef AARCHXX
     /* ARM has no thread-private gencode, so our clone syscall is shared */
     gencode->do_clone_syscall = pc;
     pc = emit_do_clone_syscall(GLOBAL_DCONTEXT, gencode, pc, gencode->fcache_return,
@@ -569,7 +569,7 @@ shared_gencode_init(IF_X86_64_ELSE(gencode_mode_t gencode_mode, void))
     protect_generated_code(gencode, READONLY);
 }
 
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
 /* Called during a reset when all threads are suspended */
 void
 arch_reset_stolen_reg(void)
@@ -680,7 +680,7 @@ arch_init(void)
     ASSERT(syscall_method != SYSCALL_METHOD_UNINITIALIZED);
 #endif
 
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
     dr_reg_stolen = DR_REG_R0 + DYNAMO_OPTION(steal_reg);
     ASSERT(dr_reg_stolen >= DR_REG_STOLEN_MIN && dr_reg_stolen <= DR_REG_STOLEN_MAX)
 #endif
@@ -1120,7 +1120,7 @@ arch_thread_init(dcontext_t *dcontext)
     return;
 #endif
 
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
     /* Store addresses we access via TLS from exit stubs and gencode. */
     get_local_state_extended()->spill_space.fcache_return =
         PC_AS_JMP_TGT(isa_mode, fcache_return_shared_routine());
@@ -2756,6 +2756,20 @@ unhook_vsyscall(void)
  * that 1) we don't have to allocate any memory and 2) we don't have
  * to do any extra work in dispatch, which will naturally go to the
  * post-system-call-instr pc.
+ * Unfortunately the 4.4.8 kernel removed the nops (i#1939) so for
+ * recent kernels we instead copy into the padding area:
+ *     0xf77c6be0:  push   %ecx
+ *     0xf77c6be1:  push   %edx
+ *     0xf77c6be2:  push   %ebp
+ *     0xf77c6be3:  mov    %esp,%ebp
+ *     0xf77c6be5:  sysenter
+ *     0xf77c6be7:  int    $0x80
+ *   normal return point:
+ *     0xf77c6be9:  pop    %ebp
+ *     0xf77c6bea:  pop    %edx
+ *     0xf77c6beb:  pop    %ecx
+ *     0xf77c6bec:  ret
+ *     0xf77c6bed+:  <padding>
  *
  * Using a hook is much simpler than clobbering the retaddr, which is what
  * Windows does and then has to spend a lot of effort juggling transparency
@@ -2800,8 +2814,6 @@ hook_vsyscall(dcontext_t *dcontext)
     }                                                 \
 } while (0);
 
-    CHECK(num_nops >= VSYS_DISPLACED_LEN);
-
     /* Only now that we've set vsyscall_sysenter_return_pc do we check writability */
     if (!DYNAMO_OPTION(hook_vsyscall)) {
         res = false;
@@ -2843,10 +2855,27 @@ hook_vsyscall(dcontext_t *dcontext)
 
     CHECK(pc - vsyscall_sysenter_return_pc == VSYS_DISPLACED_LEN);
     ASSERT(pc + 1/*nop*/ - vsyscall_sysenter_return_pc == JMP_LONG_LENGTH);
-    CHECK(num_nops >= pc - vsyscall_sysenter_return_pc);
-    memcpy(vsyscall_syscall_end_pc, vsyscall_sysenter_return_pc,
-           /* we don't copy the 5th byte to preserve nop for nice disassembly */
-           pc - vsyscall_sysenter_return_pc);
+    if (num_nops >= VSYS_DISPLACED_LEN) {
+        CHECK(num_nops >= pc - vsyscall_sysenter_return_pc);
+        memcpy(vsyscall_syscall_end_pc, vsyscall_sysenter_return_pc,
+               /* we don't copy the 5th byte to preserve nop for nice disassembly */
+               pc - vsyscall_sysenter_return_pc);
+        vsyscall_sysenter_displaced_pc = vsyscall_syscall_end_pc;
+    } else {
+        /* i#1939: the 4.4.8 kernel removed the nops.  It might be safer
+         * to place the bytes in our own memory somewhere but that requires
+         * extra logic to mark it as executable and to map the PC for
+         * dr_fragment_app_pc() and dr_app_pc_for_decoding(), so we go for the
+         * easier-to-implement route and clobber the padding garbage after the ret.
+         * We assume it is large enough for the 1 byte from the jmp32 and the
+         * 4 bytes of displacement.  Technically we should map the PC back
+         * here as well but it's close enough.
+         */
+        pc += 1; /* skip 5th byte of to-be-inserted jmp */
+        CHECK(PAGE_START(pc) == PAGE_START(pc + VSYS_DISPLACED_LEN));
+        memcpy(pc, vsyscall_sysenter_return_pc, VSYS_DISPLACED_LEN);
+        vsyscall_sysenter_displaced_pc = pc;
+    }
     insert_relative_jump(vsyscall_sysenter_return_pc,
                          /* we require a thread-shared fcache_return */
                          after_do_shared_syscall_addr(dcontext),
@@ -2864,7 +2893,7 @@ hook_vsyscall(dcontext_t *dcontext)
     instr_free(dcontext, &instr);
     return res;
 # undef CHECK
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
     /* No vsyscall support needed for our ARM targets */
     ASSERT_NOT_REACHED();
     return false;
@@ -2897,7 +2926,7 @@ unhook_vsyscall(void)
         ASSERT(res);
     }
     return true;
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
     ASSERT_NOT_IMPLEMENTED(get_syscall_method() != SYSCALL_METHOD_SYSENTER);
     return false;
 #endif /* X86/ARM */
@@ -2919,7 +2948,7 @@ check_syscall_method(dcontext_t *dcontext, instr_t *instr)
     else if (instr_get_opcode(instr) == OP_call_ind)
         new_method = SYSCALL_METHOD_WOW64;
 # endif
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
     if (instr_get_opcode(instr) == OP_svc)
         new_method = SYSCALL_METHOD_SVC;
 #endif /* X86/ARM */
@@ -3289,7 +3318,7 @@ dump_mcontext(priv_mcontext_t *context, file_t f, bool dump_xml)
                , context->r8,  context->r9,  context->r10,  context->r11,
                context->r12, context->r13, context->r14,  context->r15
 # endif /* X64 */
-#elif defined(ARM) || defined(AARCH64)
+#elif defined(AARCHXX)
                context->r0,  context->r1,  context->r2,  context->r3,
                context->r4,  context->r5,  context->r6,  context->r7,
                context->r8,  context->r9,  context->r10, context->r11,
@@ -3351,7 +3380,7 @@ dump_mcontext(priv_mcontext_t *context, file_t f, bool dump_xml)
                context->xflags, context->pc);
 }
 
-#if defined(ARM) || defined(AARCH64)
+#ifdef AARCHXX
 reg_t
 get_stolen_reg_val(priv_mcontext_t *mc)
 {
@@ -3370,9 +3399,9 @@ set_stolen_reg_val(priv_mcontext_t *mc, reg_t newval)
 #ifdef UNIX
 __inline__ uint64 get_time()
 {
-    uint64 x;
-    __asm__ volatile (".byte 0x0f, 0x31" : "=A" (x));
-    return x;
+    uint64 res;
+    RDTSC_LL(res);
+    return res;
 }
 #else /* WINDOWS */
 uint64 get_time()
