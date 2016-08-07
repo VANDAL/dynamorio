@@ -68,7 +68,7 @@ void instrument_comp(void *drcontext, instrlist_t *ilist, instr_t *where, CompCo
 // Sigil2 Interprocess Communication
 ///////////////////////////////////////////////////////
 
-void init_IPC(int idx, const char *path, const char *uid);
+void init_IPC(int idx, const char *path);
 void terminate_IPC(int idx);
 
 /* flush data to IPC; IPC is flushed if full */
@@ -86,8 +86,7 @@ typedef struct _command_line_options command_line_options;
 struct _command_line_options
 {
     int frontend_threads;
-    const char *tmp_dir;
-    const char *uid;
+    const char *ipc_dir;
     const char *start_func;
     const char *stop_func;
 } clo;

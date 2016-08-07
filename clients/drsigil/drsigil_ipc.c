@@ -160,7 +160,7 @@ flush(int idx, per_thread_t *data, bool force)
 
 
 void
-init_IPC(int idx, const char *path, const char *uid)
+init_IPC(int idx, const char *path)
 {
     DR_ASSERT(idx < MAX_IPC_CHANNELS);
 
@@ -168,28 +168,27 @@ init_IPC(int idx, const char *path, const char *uid)
     ipc_channel_t *channel = &IPC[idx];
 
     path_len = strlen(path);
-    uid_len = strlen(uid);
     pad_len = 4; /* extra space for '/', 2x'-', '\0' */
 
-    shmem_len = (path_len + uid_len + pad_len +
+    shmem_len = (path_len + pad_len +
                  sizeof(DRSIGIL_SHMEM_NAME) +
                  sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
-    fullfifo_len = (path_len + uid_len + pad_len +
+    fullfifo_len = (path_len + pad_len +
                     sizeof(DRSIGIL_FULLFIFO_NAME) +
                     sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
-    emptyfifo_len = (path_len + uid_len + pad_len +
+    emptyfifo_len = (path_len + pad_len +
                      sizeof(DRSIGIL_EMPTYFIFO_NAME) +
                      sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
 
     /* set up names of IPC files */
     char shmem_name[shmem_len];
-    sprintf(shmem_name, "%s/%s-%d-%s", path, DRSIGIL_SHMEM_NAME, idx, uid);
+    sprintf(shmem_name, "%s/%s-%d", path, DRSIGIL_SHMEM_NAME, idx);
 
     char fullfifo_name[fullfifo_len];
-    sprintf(fullfifo_name, "%s/%s-%d-%s", path, DRSIGIL_FULLFIFO_NAME, idx, uid);
+    sprintf(fullfifo_name, "%s/%s-%d", path, DRSIGIL_FULLFIFO_NAME, idx);
 
     char emptyfifo_name[emptyfifo_len];
-    sprintf(emptyfifo_name, "%s/%s-%d-%s", path, DRSIGIL_EMPTYFIFO_NAME, idx, uid);
+    sprintf(emptyfifo_name, "%s/%s-%d", path, DRSIGIL_EMPTYFIFO_NAME, idx);
 
     /* initialize read/write pipes */
     channel->empty_fifo = dr_open_file(emptyfifo_name, DR_FILE_READ);
