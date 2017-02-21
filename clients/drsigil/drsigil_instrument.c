@@ -11,24 +11,22 @@
 #include "drutil.h"
 
 
-/*
- * Appends MEMORY EVENT to dynamorio per-thread sigil event buffer,
- * and flushes the buffer to shared memory if full
- */
+
+/* Appends MEMORY EVENT to dynamorio per-thread sigil event buffer,
+ * and flushes the buffer to shared memory if full */
 static void
-clean_call_mem(per_thread_t *data, ptr_uint_t address, int size, int type)
+clean_call_mem(per_thread_t *this_thread, ptr_uint_t address, int size, int type)
 {
-    if(data->active == true && roi == true)
+    if(this_thread->active == true && roi == true)
     {
-        data->buf_ptr->tag = SGL_MEM_TAG;
-        data->buf_ptr->mem.type = type;
-        data->buf_ptr->mem.begin_addr = address;
-        data->buf_ptr->mem.size = size;
-        data->buf_ptr++;
-        if((ptr_int_t)data->buf_ptr + data->buf_end == 0)
-        {
-            flush(data->thread_id % clo.frontend_threads, data, false);
-        }
+        BufferedSglEv *event_slot = this_thread->buffer.events_ptr;
+        event_slot->tag = SGL_MEM_TAG;
+        event_slot->mem.type = type;
+        event_slot->mem.begin_addr = address;
+        event_slot->mem.size = size;
+
+        if(++this_thread->buffer.events_ptr == this_thread->buffer.events_end)
+            flush(this_thread);
     }
 }
 void
@@ -64,23 +62,20 @@ instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, int pos, Mem
 }
 
 
-/*
- * Appends INSTRUCTION to dynamorio per-thread sigil event buffer,
- * and flushes the buffer to shared memory if full
- */
+/* Appends INSTRUCTION to dynamorio per-thread sigil event buffer,
+ * and flushes the buffer to shared memory if full */
 static void
-clean_call_instr(per_thread_t *data, ptr_int_t pc)
+clean_call_instr(per_thread_t *this_thread, ptr_int_t pc)
 {
-    if(data->active == true && roi == true)
+    if(this_thread->active == true && roi == true)
     {
-        data->buf_ptr->tag = SGL_CXT_TAG;
-        data->buf_ptr->cxt.type = SGLPRIM_CXT_INSTR;
-        data->buf_ptr->cxt.id = pc;
-        data->buf_ptr++;
-        if((ptr_int_t)data->buf_ptr + data->buf_end == 0)
-        {
-            flush(data->thread_id % clo.frontend_threads, data, false);
-        }
+        BufferedSglEv *event_slot = this_thread->buffer.events_ptr;
+        event_slot->tag = SGL_CXT_TAG;
+        event_slot->cxt.type = SGLPRIM_CXT_INSTR;
+        event_slot->cxt.id = pc;
+
+        if(++this_thread->buffer.events_ptr == this_thread->buffer.events_end)
+            flush(this_thread);
     }
 }
 void
@@ -123,20 +118,19 @@ instrument_instr(void *drcontext, instrlist_t *ilist, instr_t *where)
 
 
 static void
-clean_call_comp(per_thread_t *data, CompCostType type)
+clean_call_comp(per_thread_t *this_thread, CompCostType type)
 {
-    if(data->active == true && roi == true)
+    if(this_thread->active == true && roi == true)
     {
-        data->buf_ptr->tag = SGL_COMP_TAG;
-        data->buf_ptr->comp.type = type;
-        //data->buf_ptr->comp.arity = TODO
-        //data->buf_ptr->comp.op = TODO
-        //data->buf_ptr->comp.size = TODO
-        data->buf_ptr++;
-        if((ptr_int_t)data->buf_ptr + data->buf_end == 0)
-        {
-            flush(data->thread_id % clo.frontend_threads, data, false);
-        }
+        BufferedSglEv *event_slot = this_thread->buffer.events_ptr;
+        event_slot->tag = SGL_COMP_TAG;
+        event_slot->comp.type = type;
+        //comp.arity = TODO
+        //comp.op = TODO
+        //comp.size = TODO
+
+        if(++this_thread->buffer.events_ptr == this_thread->buffer.events_end)
+            flush(this_thread);
     }
 }
 void

@@ -34,12 +34,12 @@ wrap_post_pthread_create(void *wrapcxt, void *user_data)
     dr_printf("exiting pthread_create: %d\n", data->thread_id);
     data->active = true;
 
-    data->buf_ptr->tag = SGL_SYNC_TAG;
-    data->buf_ptr->sync.type = SGLPRIM_SYNC_CREATE;
-    data->buf_ptr++;
-    if((ptr_int_t)data->buf_ptr + data->buf_end == 0)
+    data->buffer.events_ptr->tag = SGL_SYNC_TAG;
+    data->buffer.events_ptr->sync.type = SGLPRIM_SYNC_CREATE;
+    data->buffer.events_ptr++;
+    if((ptr_int_t)data->buffer.events_ptr + data->buffer.events_end == 0)
     {
-        flush(data->thread_id % clo.frontend_threads, data, true);
+        flush(data);
     }
 }
 
@@ -55,13 +55,12 @@ wrap_pre_pthread_join(void *wrapcxt, OUT void **user_data)
     dr_printf("entering pthread_join: %d\n", data->thread_id);
     data->active = false;
 
-    data->buf_ptr->tag = SGL_SYNC_TAG;
-    data->buf_ptr->sync.type = SGLPRIM_SYNC_JOIN;
-    data->buf_ptr++;
-    if((ptr_int_t)data->buf_ptr + data->buf_end == 0)
-    {
-        flush(data->thread_id % clo.frontend_threads, data, true);
-    }
+    data->buffer.events_ptr->tag       = SGL_SYNC_TAG;
+    data->buffer.events_ptr->sync.type = SGLPRIM_SYNC_JOIN;
+    data->buffer.events_ptr++;
+
+    if((ptr_int_t)data->buffer.events_ptr + data->buffer.events_end == 0)
+        flush(data);
 }
 static void
 wrap_post_pthread_join(void *wrapcxt, void *user_data)
@@ -92,13 +91,12 @@ wrap_post_pthread_mutex_lock(void *wrapcxt, void *user_data)
     dr_printf("exiting pthread_mutex_lock: %d\n", data->thread_id);
     data->active = true;
 
-    data->buf_ptr->tag = SGL_SYNC_TAG;
-    data->buf_ptr->sync.type = SGLPRIM_SYNC_LOCK;
-    data->buf_ptr++;
-    if((ptr_int_t)data->buf_ptr + data->buf_end == 0)
-    {
-        flush(data->thread_id % clo.frontend_threads, data, true);
-    }
+    data->buffer.events_ptr->tag       = SGL_SYNC_TAG;
+    data->buffer.events_ptr->sync.type = SGLPRIM_SYNC_LOCK;
+    data->buffer.events_ptr++;
+
+    if((ptr_int_t)data->buffer.events_ptr + data->buffer.events_end == 0)
+        flush(data);
 }
 
 
@@ -121,13 +119,12 @@ wrap_post_pthread_mutex_unlock(void *wrapcxt, void *user_data)
     dr_printf("exiting pthread_mutex_unlock: %d\n", data->thread_id);
     data->active = true;
 
-    data->buf_ptr->tag = SGL_SYNC_TAG;
-    data->buf_ptr->sync.type = SGLPRIM_SYNC_UNLOCK;
-    data->buf_ptr++;
-    if((ptr_int_t)data->buf_ptr + data->buf_end == 0)
-    {
-        flush(data->thread_id % clo.frontend_threads, data, true);
-    }
+    data->buffer.events_ptr->tag       = SGL_SYNC_TAG;
+    data->buffer.events_ptr->sync.type = SGLPRIM_SYNC_UNLOCK;
+    data->buffer.events_ptr++;
+
+    if((ptr_int_t)data->buffer.events_ptr + data->buffer.events_end == 0)
+        flush(data);
 }
 
 

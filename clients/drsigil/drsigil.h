@@ -2,15 +2,27 @@
 #define DRSIGIL_H
 
 #include "dr_api.h"
-
-#include "DrSigil/DrSigilIPC.h"
-
-/* internal buffer events to be flushed to shared memory */
-#define BUFFER_SIZE 1024
+#include "Frontends/DbiIpcCommon.h"
 
 ///////////////////////////////////////////////////////
 // Thread Data
 ///////////////////////////////////////////////////////
+
+
+/* The internal event buffer for this thread.
+ * This buffer is eventually flushed to shared memory */
+#define DR_PER_THREAD_BUFFER_EVENTS 10000
+#define DR_PER_THREAD_POOL_BYTES 10000
+typedef struct _per_thread_buffer_t per_thread_buffer_t;
+struct _per_thread_buffer_t
+{
+    BufferedSglEv  *events_ptr;
+    BufferedSglEv  *events_base;
+    ptr_int_t      events_end;
+    char* pool_ptr;
+    char* pool_base;
+    char* pool_end;
+};
 
 /* per-application-thread data
  *
@@ -27,26 +39,25 @@ struct _per_thread_t
     /* unique id */
     uint thread_id;
 
-    /* instrumentation is on/off for this thread */
+    /* Instrumentation is enabled/disabled for this thread.
+     * This typically depends on specific a given function has been reached */
     bool active;
 
-    /* The internal event buffer for this thread.
-     * This buffer is eventually flushed to shared memory */
-    BufferedSglEv *buf_ptr;
-    BufferedSglEv *buf_base;
-    /* buf_end holds the negative value of real address of buffer end. */
-    ptr_int_t buf_end;
+    /* stores the events */
+    per_thread_buffer_t buffer;
 };
 
-/* region-of-interest (ROI)
+/* Region-Of-Interest (ROI)
  *
  * If data should be collected or not, depending on command line arguments.
- * If no relevant args are supplied, then the ROI is assumed to be
- * the entirety of the application.
+ * If no relevant args are supplied, then the ROI is assumed to be the
+ * entirety of the application.
  *
- * Assumes the ROI is correctly implemented,
- * and gets turned on/off in the serial portion of the application */
-extern bool roi;
+ * Assumes the ROI is correctly implemented, and gets turned on/off in the
+ * serial portion of the application.
+ * XXX There is no per-thread ROI.
+ * TODO Make atomic */
+volatile extern bool roi;
 
 /* thread-local storage for per_thread_t */
 extern int tls_idx;
@@ -71,8 +82,8 @@ void instrument_comp(void *drcontext, instrlist_t *ilist, instr_t *where, CompCo
 void init_IPC(int idx, const char *path);
 void terminate_IPC(int idx);
 
-/* flush data to IPC; IPC is flushed if full */
-void flush(int idx, per_thread_t *data, bool force);
+/* flush events to IPC */
+void flush(per_thread_t *tcxt);
 
 ///////////////////////////////////////////////////////
 // Misc Utilities
