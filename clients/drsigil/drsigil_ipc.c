@@ -1,70 +1,17 @@
 #include "drsigil.h"
 #include <string.h>
-#include <sys/types.h>
 #include <time.h>
+#include <limits.h>
+#include <unistd.h>
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
 
-/* Convenience macros */
 #define STRINGIFY(x) #x
-#define DRSIGIL_MIN(x, y) (x) > (y) ? (y) : (x)
-
-
-/* The shared memory channel between this DynamoRIO client application
- * and Sigil2. Multiple channels can exist to reduce contention on the
- * channels; the number of channels is determined by Sigil2 when DynamoRIO
- * is invoked, via command line. Additionally, the number of channels will
- * match the number of frontend Sigil2 threads, so that each thread will
- * process one buffer. The buffer an application thread writes
- * to depends on its thread id (thread id % number of channels).
- * That is, if there is one channel, then all threads vie over that channel.
- */
-typedef struct _ipc_channel_t ipc_channel_t;
-struct _ipc_channel_t
-{
-    /* Produce data to this buffer */
-    Sigil2DBISharedData *shared_mem;
-
-    /* Multiple threads can write via this IPC channel.
-     * Only allow one at a time. */
-    void *shared_mem_lock;
-
-    /* Update Sigil2 via this fifo which buffers
-     * are full and ready to be consumed */
-    file_t full_fifo;
-
-    /* Sigil2 updates DynamoRIO with the last
-     * buffer consumed(empty) via this fifo */
-    file_t empty_fifo;
-
-    /* The current buffer being filled in shared memory */
-    uint shmem_buf_idx;
-
-    /* Corresponds to each buffer that is
-       empty and ready to be filled */
-    bool empty_buf_idx[SIGIL2_DBI_BUFFERS];
-
-    /* If this is a valid channel */
-    bool initialized;
-};
 
 /* Initialize all possible IPC channels (some will not be used) */
 #define MAX_IPC_CHANNELS 256 //fudge number
 ipc_channel_t IPC[MAX_IPC_CHANNELS];
-
-
-static inline int
-read_empty_fifo_available(file_t empty_fifo)
-{
-    int idx;
-    dr_read_file(empty_fifo, &idx, sizeof(idx));
-    return idx;
-}
-
-
-static inline void
-write_full_fifo_available(file_t full_fifo, int idx)
-{
-    dr_write_file(full_fifo, &idx, sizeof(idx));
-}
 
 
 /* Tell Sigil2 that the active buffer, on the given IPC channel,
@@ -72,7 +19,8 @@ write_full_fifo_available(file_t full_fifo, int idx)
 static inline void
 notify_full_buffer(ipc_channel_t *channel)
 {
-    write_full_fifo_available(channel->full_fifo, channel->shmem_buf_idx);
+    dr_write_file(channel->full_fifo,
+                  &channel->shmem_buf_idx, sizeof(channel->shmem_buf_idx));
 
     /* Flag the shared memory buffer as used (by Sigil2) */
     channel->empty_buf_idx[channel->shmem_buf_idx] = false;
@@ -83,13 +31,19 @@ notify_full_buffer(ipc_channel_t *channel)
 static inline EventBuffer*
 get_next_buffer(ipc_channel_t *channel)
 {
+    /* Circular buffer, must be power of 2 */
+    channel->shmem_buf_idx = (channel->shmem_buf_idx+1) & (SIGIL2_DBI_BUFFERS-1);
+
     /* Sigil2 tells us when it's finished with a shared memory buffer */
-    if(channel->empty_buf_idx[++channel->shmem_buf_idx] == false)
+    if(channel->empty_buf_idx[channel->shmem_buf_idx] == false)
     {
-        channel->shmem_buf_idx = read_empty_fifo_available(channel->empty_fifo);
+        dr_read_file(channel->empty_fifo,
+                     &channel->shmem_buf_idx, sizeof(channel->shmem_buf_idx));
         channel->empty_buf_idx[channel->shmem_buf_idx] = true;
     }
 
+    channel->shared_mem->buf[channel->shmem_buf_idx].events_used = 0;
+    channel->shared_mem->buf[channel->shmem_buf_idx].pool_used   = 0;
     return channel->shared_mem->buf + channel->shmem_buf_idx;
 }
 
@@ -104,27 +58,46 @@ get_buffer(ipc_channel_t *channel, uint required)
     if(available < required)
     {
         notify_full_buffer(channel); // First inform Sigil2 the current buffer can be read
-        return get_next_buffer(channel); // Then get a new buffer for writing
+        current_shmem_buffer = get_next_buffer(channel); // Then get a new buffer for writing
     }
-    else
-    {
-        return current_shmem_buffer;
-    }
+
+    return current_shmem_buffer;
 }
 
+
+static inline int
+futex(int *uaddr, int futex_op, int val,
+	  const struct timespec *timeout, int *uaddr2, int val3)
+{
+	return syscall(SYS_futex, uaddr, futex_op, val,
+				   timeout, uaddr2, val3);
+}
 
 static inline void
-flush_n_events(BufferedSglEv *restrict from, BufferedSglEv *restrict to, uint n)
+ordered_lock(ipc_channel_t *channel)
 {
-    for(uint i=0; i<n; ++i)
-        *to++ = *from++;
+    int seq = channel->ord.seq;
+    uint turn = __sync_fetch_and_add(&channel->ord.counter, 1);
+    while(turn != channel->ord.next)
+    {
+		/* TODO Timeout in case the next-in-line arrived AFTER
+		 * the unlock. Would that even cause a problem? */
+		futex(&channel->ord.seq, FUTEX_WAIT_PRIVATE, seq, NULL, NULL, 0);
+        seq = channel->ord.seq;
+    }
+}
+
+static inline void
+ordered_unlock(ipc_channel_t *channel)
+{
+	++channel->ord.next;
+	++channel->ord.seq;
+	futex(&channel->ord.seq, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
 }
 
 
-/* Flush this thread's event buffer to Sigil2 buffer
- * TODO profile this function for bottlenecks */
-void
-flush(per_thread_t *tcxt)
+static inline ipc_channel_t*
+get_locked_channel(per_thread_t *tcxt)
 {
     /* Calculate the channel index.
      * Each native dynamoRIO thread will write to a runtime-determined
@@ -133,28 +106,86 @@ flush(per_thread_t *tcxt)
      * means more load (threads) on Sigil2. Therefore, the total number
      * of buffers from DynamoRIO -> Sigil2 is a command line variable. */
     uint channel_idx = tcxt->thread_id % clo.frontend_threads;
-
-    /* Lock the shared memory channel to prevent
-     * other application threads from flushing */
     ipc_channel_t *channel = &IPC[channel_idx];
-    dr_mutex_lock(channel->shared_mem_lock);
 
-    /* the event buffer for this thread */
-    per_thread_buffer_t *buffer = &tcxt->buffer;
-    uint events_to_flush  = buffer->events_ptr - buffer->events_base;
+    /* requeue self to lock channel */
+    if(tcxt->has_channel_lock)
+    {
+        ordered_unlock(channel);
+    }
 
-    /* get a shared memory buffer with enough space to write to */
-    EventBuffer *shmem_buffer = get_buffer(channel, events_to_flush);
+    /* Lock the shared memory channel */
+    ordered_lock(channel);
+    tcxt->has_channel_lock = true;
 
-    flush_n_events(buffer->events_base, shmem_buffer->events + shmem_buffer->events_used,
-                   events_to_flush);
-    shmem_buffer->events_used += events_to_flush;
-
-    /* reset */
-    dr_mutex_unlock(channel->shared_mem_lock);
-    buffer->events_ptr = buffer->events_base;
+    return channel;
 }
 
+static inline BufferedSglEv*
+set_shared_memory_buffer_helper(per_thread_t *tcxt, ipc_channel_t *channel)
+{
+
+    EventBuffer *current_shmem_buffer = channel->shared_mem->buf + channel->shmem_buf_idx;
+    size_t available = SIGIL2_MAX_EVENTS - current_shmem_buffer->events_used;
+
+    if (available < MIN_DR_PER_THREAD_BUFFER_EVENTS)
+    {
+        notify_full_buffer(channel); // First inform Sigil2 the current buffer can be read
+        current_shmem_buffer = get_next_buffer(channel); // Then get a new buffer for writing
+        available = SIGIL2_MAX_EVENTS - current_shmem_buffer->events_used;
+    }
+
+    size_t events = (available >= DR_PER_THREAD_BUFFER_EVENTS) ? 
+        DR_PER_THREAD_BUFFER_EVENTS : available;
+
+    tcxt->buffer.events_ptr = current_shmem_buffer->events + current_shmem_buffer->events_used;
+    tcxt->buffer.events_end = tcxt->buffer.events_ptr + events;
+    tcxt->buffer.events_used = &current_shmem_buffer->events_used;
+}
+
+
+
+/////////////////////////////////////////////////////////////////////
+// IPC interface 
+/////////////////////////////////////////////////////////////////////
+
+void set_shared_memory_buffer(per_thread_t *tcxt)
+{
+    ipc_channel_t *channel = get_locked_channel(tcxt);
+
+    set_shared_memory_buffer_helper(tcxt, channel);
+
+    if(channel->last_active_tid != tcxt->thread_id)
+    {
+        /* Write thread swap event */
+        SglSyncEv ev = {
+            .type = SGLPRIM_SYNC_SWAP,
+            .id   = tcxt->thread_id
+        };
+        tcxt->buffer.events_ptr->tag  = SGL_SYNC_TAG;
+        tcxt->buffer.events_ptr->sync = ev;
+        ++tcxt->buffer.events_ptr;
+        ++*(tcxt->buffer.events_used);
+    }
+
+    channel->last_active_tid = tcxt->thread_id;
+}
+
+void force_thread_flush(per_thread_t *tcxt)
+{
+    if(tcxt->has_channel_lock)
+    {
+        uint channel_idx = tcxt->thread_id % clo.frontend_threads;
+        ipc_channel_t *channel = &IPC[channel_idx];
+        notify_full_buffer(channel);
+        get_next_buffer(channel);
+        ordered_unlock(channel);
+        tcxt->has_channel_lock = false;
+        tcxt->buffer.events_ptr = 0;
+        tcxt->buffer.events_end = 0;
+        tcxt->buffer.events_used = NULL;
+    }
+}
 
 void
 init_IPC(int idx, const char *path)
@@ -164,6 +195,22 @@ init_IPC(int idx, const char *path)
     int path_len, pad_len, shmem_len, fullfifo_len, emptyfifo_len;
     ipc_channel_t *channel = &IPC[idx];
 
+    /* Initialize channel state */
+    channel->ord.counter   = 0;
+    channel->ord.next      = 0;
+    channel->ord.seq       = 0;
+    channel->shared_mem    = NULL;
+    channel->full_fifo     = -1;
+    channel->empty_fifo    = -1;
+    channel->shmem_buf_idx = 0;
+
+    for(uint i=0; i<sizeof(channel->empty_buf_idx)/sizeof(channel->empty_buf_idx[0]); ++i)
+        channel->empty_buf_idx[i] = true;
+
+    channel->last_active_tid = 0;
+    channel->initialized     = false;
+
+    /* Connect to Sigil2 */
     path_len = strlen(path);
     pad_len = 4; /* extra space for '/', 2x'-', '\0' */
     shmem_len     = (path_len + pad_len +
@@ -197,11 +244,11 @@ init_IPC(int idx, const char *path)
             break;
 
         if(i == max_tests)
-            dr_abort_w_msg("sigil2 fifos not found");
+            dr_printf("%s\n", emptyfifo_name), dr_abort_w_msg("DrSigil timed out waiting for sigil2 fifos");
 
         struct timespec ts;
         ts.tv_sec  = 0;
-        ts.tv_nsec = 100000000L;
+        ts.tv_nsec = 200000000L;
         nanosleep(&ts, NULL);
     }
 
@@ -229,12 +276,7 @@ init_IPC(int idx, const char *path)
         dr_abort_w_msg("error mapping shared memory");
 
     dr_close_file(map_file);
-
-    /* initialize channel state */
-    channel->shmem_buf_idx = 0;
-    for(uint i=0; i<sizeof(channel->empty_buf_idx)/sizeof(channel->empty_buf_idx[0]); ++i)
-        channel->empty_buf_idx[i] = true;
-    channel->shared_mem_lock = dr_mutex_create();
+    channel->initialized = true;
 }
 
 
@@ -244,8 +286,9 @@ terminate_IPC(int idx)
     /* send terminate sequence */
     dr_printf("disconnecting from %d\n", idx);
     uint finished = SIGIL2_DBI_FINISHED;
-    if(dr_write_file(IPC[idx].full_fifo, &finished, sizeof(finished)) != sizeof(finished) ||
-       dr_write_file(IPC[idx].full_fifo, &IPC[idx].shmem_buf_idx, sizeof(IPC[idx].shmem_buf_idx)) != sizeof(IPC[idx].shmem_buf_idx))
+    uint last_buffer = IPC[idx].shmem_buf_idx;
+    if(dr_write_file(IPC[idx].full_fifo, &last_buffer, sizeof(last_buffer)) != sizeof(last_buffer) ||
+       dr_write_file(IPC[idx].full_fifo, &finished,    sizeof(finished))    != sizeof(finished))
         dr_abort_w_msg("error writing finish sequence sigil2 fifos");
 
     /* wait for sigil2 to disconnect */
@@ -255,5 +298,4 @@ terminate_IPC(int idx)
     dr_close_file(IPC[idx].empty_fifo);
     dr_close_file(IPC[idx].full_fifo);
     dr_unmap_file(IPC[idx].shared_mem, sizeof(Sigil2DBISharedData));
-    dr_mutex_destroy(IPC[idx].shared_mem_lock);
 }

@@ -22,25 +22,26 @@ static void
 wrap_pre_pthread_create(void *wrapcxt, OUT void **user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
-    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("entering pthread_create: %d\n", data->thread_id);
-    data->active = false;
+    per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("entering pthread_create: %d\n", tcxt->thread_id);
+    tcxt->active = false;
 }
 static void
 wrap_post_pthread_create(void *wrapcxt, void *user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
-    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("exiting pthread_create: %d\n", data->thread_id);
-    data->active = true;
+    per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("exiting pthread_create: %d\n", tcxt->thread_id);
+    tcxt->active = true;
 
-    data->buffer.events_ptr->tag = SGL_SYNC_TAG;
-    data->buffer.events_ptr->sync.type = SGLPRIM_SYNC_CREATE;
-    data->buffer.events_ptr++;
-    if((ptr_int_t)data->buffer.events_ptr + data->buffer.events_end == 0)
-    {
-        flush(data);
-    }
+    if(tcxt->buffer.events_ptr == tcxt->buffer.events_end)
+        set_shared_memory_buffer(tcxt);
+
+    tcxt->buffer.events_ptr->tag       = SGL_SYNC_TAG;
+    tcxt->buffer.events_ptr->sync.type = SGLPRIM_SYNC_CREATE;
+
+    ++tcxt->buffer.events_ptr;
+    ++*(tcxt->buffer.events_used);
 }
 
 
@@ -51,24 +52,28 @@ static void
 wrap_pre_pthread_join(void *wrapcxt, OUT void **user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
-    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("entering pthread_join: %d\n", data->thread_id);
-    data->active = false;
+    per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("entering pthread_join: %d\n", tcxt->thread_id);
+    tcxt->active = false;
 
-    data->buffer.events_ptr->tag       = SGL_SYNC_TAG;
-    data->buffer.events_ptr->sync.type = SGLPRIM_SYNC_JOIN;
-    data->buffer.events_ptr++;
+    if(tcxt->buffer.events_ptr == tcxt->buffer.events_end)
+        set_shared_memory_buffer(tcxt);
 
-    if((ptr_int_t)data->buffer.events_ptr + data->buffer.events_end == 0)
-        flush(data);
+    tcxt->buffer.events_ptr->tag       = SGL_SYNC_TAG;
+    tcxt->buffer.events_ptr->sync.type = SGLPRIM_SYNC_JOIN;
+
+    ++tcxt->buffer.events_ptr;
+    ++*(tcxt->buffer.events_used);
+
+    force_thread_flush(tcxt);
 }
 static void
 wrap_post_pthread_join(void *wrapcxt, void *user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
-    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("exiting pthread_join: %d\n", data->thread_id);
-    data->active = true;
+    per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("exiting pthread_join: %d\n", tcxt->thread_id);
+    tcxt->active = true;
 }
 
 
@@ -79,24 +84,26 @@ static void
 wrap_pre_pthread_mutex_lock(void *wrapcxt, OUT void **user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
-    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("entering pthread_mutex_lock: %d\n", data->thread_id);
-    data->active = false;
+    per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("entering pthread_mutex_lock: %d\n", tcxt->thread_id);
+    tcxt->active = false;
 }
 static void
 wrap_post_pthread_mutex_lock(void *wrapcxt, void *user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
-    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("exiting pthread_mutex_lock: %d\n", data->thread_id);
-    data->active = true;
+    per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("exiting pthread_mutex_lock: %d\n", tcxt->thread_id);
+    tcxt->active = true;
 
-    data->buffer.events_ptr->tag       = SGL_SYNC_TAG;
-    data->buffer.events_ptr->sync.type = SGLPRIM_SYNC_LOCK;
-    data->buffer.events_ptr++;
+    if(tcxt->buffer.events_ptr == tcxt->buffer.events_end)
+        set_shared_memory_buffer(tcxt);
 
-    if((ptr_int_t)data->buffer.events_ptr + data->buffer.events_end == 0)
-        flush(data);
+    tcxt->buffer.events_ptr->tag       = SGL_SYNC_TAG;
+    tcxt->buffer.events_ptr->sync.type = SGLPRIM_SYNC_LOCK;
+
+    ++tcxt->buffer.events_ptr;
+    ++*(tcxt->buffer.events_used);
 }
 
 
@@ -107,24 +114,26 @@ static void
 wrap_pre_pthread_mutex_unlock(void *wrapcxt, OUT void **user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
-    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("entering pthread_mutex_unlock: %d\n", data->thread_id);
-    data->active = false;
+    per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("entering pthread_mutex_unlock: %d\n", tcxt->thread_id);
+    tcxt->active = false;
 }
 static void
 wrap_post_pthread_mutex_unlock(void *wrapcxt, void *user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
-    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("exiting pthread_mutex_unlock: %d\n", data->thread_id);
-    data->active = true;
+    per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("exiting pthread_mutex_unlock: %d\n", tcxt->thread_id);
+    tcxt->active = true;
 
-    data->buffer.events_ptr->tag       = SGL_SYNC_TAG;
-    data->buffer.events_ptr->sync.type = SGLPRIM_SYNC_UNLOCK;
-    data->buffer.events_ptr++;
+    if(tcxt->buffer.events_ptr == tcxt->buffer.events_end)
+        set_shared_memory_buffer(tcxt);
 
-    if((ptr_int_t)data->buffer.events_ptr + data->buffer.events_end == 0)
-        flush(data);
+    tcxt->buffer.events_ptr->tag       = SGL_SYNC_TAG;
+    tcxt->buffer.events_ptr->sync.type = SGLPRIM_SYNC_UNLOCK;
+
+    ++tcxt->buffer.events_ptr;
+    ++*(tcxt->buffer.events_used);
 }
 
 

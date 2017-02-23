@@ -59,7 +59,7 @@ enum {
 void
 dr_abort_w_msg(const char *msg)
 {
-    dr_fprintf(STDERR, "[DrSigil][ABORT]%s\n", msg);
+    dr_fprintf(STDERR, "[DRSIGIL] [abort] %s\n", msg);
     dr_abort();
 }
 
@@ -180,18 +180,12 @@ event_thread_init(void *drcontext)
     per_thread_t *init = dr_thread_alloc(drcontext, sizeof(per_thread_t));
     per_thread_buffer_t *init_buffer = &init->buffer;
 
-    /* TODO does 'num_threads' have to be atomic for ARM?
-     * If this is a problem, use dr_get_thread_id() */
-    init->thread_id = num_threads++;
-
-    /* automatically start collecting events for any spawned threads */
     init->active = true;
-
-    init_buffer->events_ptr = dr_thread_alloc(drcontext, sizeof(BufferedSglEv)*DR_PER_THREAD_BUFFER_EVENTS);
-    init_buffer->events_base = init_buffer->events_ptr;
-
-    /* set end to be negative of address of buffer end for 'lea' trick later */
-    init_buffer->events_end  = -(ptr_int_t)(init_buffer->events_base + DR_PER_THREAD_BUFFER_EVENTS);
+    init->thread_id = __sync_add_and_fetch(&num_threads,1);
+    init->has_channel_lock = false;
+    init_buffer->events_ptr = NULL;
+    init_buffer->events_end = NULL;
+    init_buffer->events_used = NULL;
 
     drmgr_set_tls_field(drcontext, tls_idx, init);
 }
@@ -200,12 +194,10 @@ event_thread_init(void *drcontext)
 static void
 event_thread_exit(void *drcontext)
 {
-    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("One last flush for thread %d\n", data->thread_id);
-    flush(data);
-
-    dr_thread_free(drcontext, data->buffer.events_base, sizeof(BufferedSglEv)*DR_PER_THREAD_BUFFER_EVENTS);
-    dr_thread_free(drcontext, data, sizeof(per_thread_t));
+    per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
+    dr_printf("One last flush for thread %d\n", tcxt->thread_id);
+    force_thread_flush(tcxt);
+    dr_thread_free(drcontext, tcxt, sizeof(per_thread_t));
 }
 
 

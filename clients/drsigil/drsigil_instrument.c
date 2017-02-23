@@ -1,32 +1,30 @@
-/*
+/**
  * Much of this implementation is based off
  * the 'memtrace_x86.c' dynamorio api example
  */
-
-#include <stddef.h> /* for offsetof */
-
 #include "drsigil.h"
-
 #include "drmgr.h"
 #include "drutil.h"
-
-
+#include <stddef.h> /* for offsetof */
 
 /* Appends MEMORY EVENT to dynamorio per-thread sigil event buffer,
  * and flushes the buffer to shared memory if full */
 static void
-clean_call_mem(per_thread_t *this_thread, ptr_uint_t address, int size, int type)
+clean_call_mem(per_thread_t *tcxt, ptr_uint_t address, int size, int type)
 {
-    if(this_thread->active == true && roi == true)
+    if(tcxt->active == true && roi == true)
     {
-        BufferedSglEv *event_slot = this_thread->buffer.events_ptr;
+        if(tcxt->buffer.events_ptr == tcxt->buffer.events_end)
+            set_shared_memory_buffer(tcxt);
+
+        BufferedSglEv *event_slot = tcxt->buffer.events_ptr;
         event_slot->tag = SGL_MEM_TAG;
         event_slot->mem.type = type;
         event_slot->mem.begin_addr = address;
         event_slot->mem.size = size;
 
-        if(++this_thread->buffer.events_ptr == this_thread->buffer.events_end)
-            flush(this_thread);
+        ++tcxt->buffer.events_ptr;
+        ++*(tcxt->buffer.events_used);
     }
 }
 void
@@ -65,17 +63,20 @@ instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, int pos, Mem
 /* Appends INSTRUCTION to dynamorio per-thread sigil event buffer,
  * and flushes the buffer to shared memory if full */
 static void
-clean_call_instr(per_thread_t *this_thread, ptr_int_t pc)
+clean_call_instr(per_thread_t *tcxt, ptr_int_t pc)
 {
-    if(this_thread->active == true && roi == true)
+    if(tcxt->active == true && roi == true)
     {
-        BufferedSglEv *event_slot = this_thread->buffer.events_ptr;
+        if(tcxt->buffer.events_ptr == tcxt->buffer.events_end)
+            set_shared_memory_buffer(tcxt);
+
+        BufferedSglEv *event_slot = tcxt->buffer.events_ptr;
         event_slot->tag = SGL_CXT_TAG;
         event_slot->cxt.type = SGLPRIM_CXT_INSTR;
         event_slot->cxt.id = pc;
 
-        if(++this_thread->buffer.events_ptr == this_thread->buffer.events_end)
-            flush(this_thread);
+        ++tcxt->buffer.events_ptr;
+        ++*(tcxt->buffer.events_used);
     }
 }
 void
@@ -118,19 +119,22 @@ instrument_instr(void *drcontext, instrlist_t *ilist, instr_t *where)
 
 
 static void
-clean_call_comp(per_thread_t *this_thread, CompCostType type)
+clean_call_comp(per_thread_t *tcxt, CompCostType type)
 {
-    if(this_thread->active == true && roi == true)
+    if(tcxt->active == true && roi == true)
     {
-        BufferedSglEv *event_slot = this_thread->buffer.events_ptr;
+        if(tcxt->buffer.events_ptr == tcxt->buffer.events_end)
+            set_shared_memory_buffer(tcxt);
+
+        BufferedSglEv *event_slot = tcxt->buffer.events_ptr;
         event_slot->tag = SGL_COMP_TAG;
         event_slot->comp.type = type;
         //comp.arity = TODO
         //comp.op = TODO
         //comp.size = TODO
 
-        if(++this_thread->buffer.events_ptr == this_thread->buffer.events_end)
-            flush(this_thread);
+        ++tcxt->buffer.events_ptr;
+        ++*(tcxt->buffer.events_used);
     }
 }
 void
