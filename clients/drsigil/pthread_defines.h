@@ -23,7 +23,6 @@ wrap_pre_pthread_create(void *wrapcxt, OUT void **user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
     per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("entering pthread_create: %d\n", tcxt->thread_id);
     tcxt->active = false;
 }
 static void
@@ -31,7 +30,6 @@ wrap_post_pthread_create(void *wrapcxt, void *user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
     per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("exiting pthread_create: %d\n", tcxt->thread_id);
     tcxt->active = true;
 
     if(tcxt->buffer.events_ptr == tcxt->buffer.events_end)
@@ -53,7 +51,6 @@ wrap_pre_pthread_join(void *wrapcxt, OUT void **user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
     per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("entering pthread_join: %d\n", tcxt->thread_id);
     tcxt->active = false;
 
     if(tcxt->buffer.events_ptr == tcxt->buffer.events_end)
@@ -72,7 +69,6 @@ wrap_post_pthread_join(void *wrapcxt, void *user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
     per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("exiting pthread_join: %d\n", tcxt->thread_id);
     tcxt->active = true;
 }
 
@@ -85,7 +81,6 @@ wrap_pre_pthread_mutex_lock(void *wrapcxt, OUT void **user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
     per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("entering pthread_mutex_lock: %d\n", tcxt->thread_id);
     tcxt->active = false;
 }
 static void
@@ -93,7 +88,6 @@ wrap_post_pthread_mutex_lock(void *wrapcxt, void *user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
     per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("exiting pthread_mutex_lock: %d\n", tcxt->thread_id);
     tcxt->active = true;
 
     if(tcxt->buffer.events_ptr == tcxt->buffer.events_end)
@@ -115,7 +109,6 @@ wrap_pre_pthread_mutex_unlock(void *wrapcxt, OUT void **user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
     per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("entering pthread_mutex_unlock: %d\n", tcxt->thread_id);
     tcxt->active = false;
 }
 static void
@@ -123,7 +116,6 @@ wrap_post_pthread_mutex_unlock(void *wrapcxt, void *user_data)
 {
     void *drcontext  = dr_get_current_drcontext();
     per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("exiting pthread_mutex_unlock: %d\n", tcxt->thread_id);
     tcxt->active = true;
 
     if(tcxt->buffer.events_ptr == tcxt->buffer.events_end)

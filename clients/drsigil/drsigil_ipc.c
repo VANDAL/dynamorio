@@ -88,11 +88,11 @@ ordered_lock(ipc_channel_t *channel)
 }
 
 static inline void
-ordered_unlock(ipc_channel_t *channel)
+ordered_unlock(volatile ipc_channel_t *channel)
 {
 	++channel->ord.next;
 	++channel->ord.seq;
-	futex(&channel->ord.seq, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
+	futex((int*)&channel->ord.seq, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
 }
 
 
@@ -284,7 +284,6 @@ void
 terminate_IPC(int idx)
 {
     /* send terminate sequence */
-    dr_printf("disconnecting from %d\n", idx);
     uint finished = SIGIL2_DBI_FINISHED;
     uint last_buffer = IPC[idx].shmem_buf_idx;
     if(dr_write_file(IPC[idx].full_fifo, &last_buffer, sizeof(last_buffer)) != sizeof(last_buffer) ||
@@ -293,7 +292,6 @@ terminate_IPC(int idx)
 
     /* wait for sigil2 to disconnect */
     while(dr_read_file(IPC[idx].empty_fifo, &finished, sizeof(finished)) > 0);
-    dr_printf("disconnected from %d\n", idx);
 
     dr_close_file(IPC[idx].empty_fifo);
     dr_close_file(IPC[idx].full_fifo);

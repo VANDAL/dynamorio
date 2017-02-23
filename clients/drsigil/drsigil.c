@@ -9,31 +9,6 @@
 #include "drwrap.h"
 #include "drutil.h"
 
-/* FIXME??? A different ordering between what is
- * being traced and what is actually occuring
- * is highly likely due to data races.
- *
- * For example, if thread-A logs a memory event,
- * and then thread-B later logs a memory event,
- * there is no guarantee that the thread-A event
- * actually is registered first.
- *
- * This is a performance trade-off, since even trying
- * to atomically log events will change the order in
- * which they would have originally executed, due to
- * the observer effect
- *
- * Additionally, because threads hold a BUFFER_SIZE size buffer,
- * event orderings between each buffer flush are lost.
- * This is generally acceptable, as we assume the application being
- * traced uses industry and academia accepted methods for
- * multi-threaded synchronization. E.g. custom user-implemented
- * spin-locks are NOT allowed in the application.
- *
- * DrSigil passes the responsibility of event ordering between
- * threads to Sigil2 backend analyses.
- */
-
 
 ///////////////////////////////////////////////////////
 // Definitions
@@ -55,7 +30,6 @@ enum {
 ///////////////////////////////////////////////////////
 // Die with error msg
 ///////////////////////////////////////////////////////
-
 void
 dr_abort_w_msg(const char *msg)
 {
@@ -195,7 +169,6 @@ static void
 event_thread_exit(void *drcontext)
 {
     per_thread_t *tcxt = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_printf("One last flush for thread %d\n", tcxt->thread_id);
     force_thread_flush(tcxt);
     dr_thread_free(drcontext, tcxt, sizeof(per_thread_t));
 }
@@ -204,13 +177,8 @@ event_thread_exit(void *drcontext)
 static void
 event_exit(void)
 {
-    dr_printf("Exiting DR: %d frontend threads\n", clo.frontend_threads);
     for(int i=0; i<clo.frontend_threads; ++i)
-    {
-        dr_printf("Terminating idx %d\n", i);
         terminate_IPC(i);
-        dr_printf("Terminated idx %d\n", i);
-    }
 
     if (!drmgr_unregister_thread_init_event(event_thread_init) ||
         !drmgr_unregister_thread_exit_event(event_thread_exit) ||
