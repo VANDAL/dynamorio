@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2016 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2017 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -327,8 +327,7 @@ private_instr_encode(dcontext_t *dcontext, instr_t *instr, bool always_cache)
     /* we cannot use a stack buffer for encoding since our stack on x64 linux
      * can be too far to reach from our heap
      */
-    byte *buf = heap_alloc(dcontext, 32 /* max instr length is 17 bytes */
-                           HEAPACCT(ACCT_IR));
+    byte *buf = heap_alloc(dcontext, MAX_INSTR_LENGTH HEAPACCT(ACCT_IR));
     uint len;
     /* Do not cache instr opnds as they are pc-relative to final encoding location.
      * Rather than us walking all of the operands separately here, we have
@@ -344,7 +343,7 @@ private_instr_encode(dcontext_t *dcontext, instr_t *instr, bool always_cache)
             SYSLOG_INTERNAL_WARNING("cannot encode %s", opcode_to_encoding_info
                                     (instr->opcode, instr_get_isa_mode(instr)
                                      _IF_ARM(false))->name);
-            heap_free(dcontext, buf, 32 HEAPACCT(ACCT_IR));
+            heap_free(dcontext, buf, MAX_INSTR_LENGTH HEAPACCT(ACCT_IR));
             return 0;
         }
         /* if unreachable, we can't cache, since re-relativization won't work */
@@ -353,8 +352,8 @@ private_instr_encode(dcontext_t *dcontext, instr_t *instr, bool always_cache)
     len = (int) (nxt - buf);
     CLIENT_ASSERT(len > 0 || instr_is_label(instr),
                   "encode instr for length/eflags error: zero length");
-    CLIENT_ASSERT(len < 32, "encode instr for length/eflags error: instr too long");
-    ASSERT_CURIOSITY(len >= 0 && len < 18);
+    CLIENT_ASSERT(len <= MAX_INSTR_LENGTH,
+                  "encode instr for length/eflags error: instr too long");
 
     /* do not cache encoding if mangle is false, that way we can have
      * non-cti-instructions that are pc-relative.
@@ -392,7 +391,7 @@ private_instr_encode(dcontext_t *dcontext, instr_t *instr, bool always_cache)
         instr->bytes = tmp;
         instr_set_operands_valid(instr, valid);
     }
-    heap_free(dcontext, buf, 32 HEAPACCT(ACCT_IR));
+    heap_free(dcontext, buf, MAX_INSTR_LENGTH HEAPACCT(ACCT_IR));
     return len;
 }
 
@@ -2770,6 +2769,21 @@ instr_create_4dst_1src(dcontext_t *dcontext, int opcode,
 }
 
 instr_t *
+instr_create_4dst_2src(dcontext_t *dcontext, int opcode,
+                       opnd_t dst1, opnd_t dst2, opnd_t dst3, opnd_t dst4,
+                       opnd_t src1, opnd_t src2)
+{
+    instr_t *in = instr_build(dcontext, opcode, 4, 2);
+    instr_set_dst(in, 0, dst1);
+    instr_set_dst(in, 1, dst2);
+    instr_set_dst(in, 2, dst3);
+    instr_set_dst(in, 3, dst4);
+    instr_set_src(in, 0, src1);
+    instr_set_src(in, 1, src2);
+    return in;
+}
+
+instr_t *
 instr_create_4dst_4src(dcontext_t *dcontext, int opcode,
                        opnd_t dst1, opnd_t dst2, opnd_t dst3, opnd_t dst4,
                        opnd_t src1, opnd_t src2, opnd_t src3, opnd_t src4)
@@ -3067,8 +3081,8 @@ instr_create_save_immed_to_dc_via_reg(dcontext_t *dcontext, reg_id_t basereg,
     opnd_t memopnd = opnd_create_dcontext_field_via_reg_sz
         (dcontext, basereg, offs, sz);
     ASSERT(sz == OPSZ_1 || sz == OPSZ_2 || sz == OPSZ_4);
-    /* there is no immed to mem instr on ARM */
-    IF_ARM(ASSERT_NOT_IMPLEMENTED(false));
+    /* There is no immed to mem instr on ARM or AArch64. */
+    IF_NOT_X86(ASSERT_NOT_IMPLEMENTED(false));
     return XINST_CREATE_store(dcontext, memopnd,
                               opnd_create_immed_int(immed, sz));
 }

@@ -1,5 +1,5 @@
 /* *******************************************************************************
- * Copyright (c) 2011-2016 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2017 Google, Inc.  All rights reserved.
  * Copyright (c) 2010 Massachusetts Institute of Technology  All rights reserved.
  * Copyright (c) 2009 Derek Bruening   All rights reserved.
  * *******************************************************************************/
@@ -277,8 +277,10 @@ unload_private_library(app_pc modbase)
     bool res = false;
     acquire_recursive_lock(&privload_lock);
     mod = privload_lookup_by_base(modbase);
-    if (mod != NULL)
-        res = privload_unload(mod);
+    if (mod != NULL) {
+        res = true; /* don't care if refcount hit 0 or not */
+        privload_unload(mod);
+    }
     release_recursive_lock(&privload_lock);
     return res;
 }
@@ -543,7 +545,7 @@ privload_load(const char *filename, privmod_t *dependent, bool client)
 
     LOG(GLOBAL, LOG_LOADER, 2, "%s: loading %s\n", __FUNCTION__, filename);
 
-    map = privload_map_and_relocate(filename, &size, client);
+    map = privload_map_and_relocate(filename, &size, client ? MODLOAD_REACHABLE : 0);
     if (map == NULL) {
         LOG(GLOBAL, LOG_LOADER, 1, "%s: failed to map %s\n", __FUNCTION__, filename);
         return NULL;

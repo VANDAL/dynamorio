@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2015 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2017 Google, Inc.  All rights reserved.
  * Copyright (c) 2002-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -167,6 +167,16 @@
 #define XINST_CREATE_load(dc, r, m)  INSTR_CREATE_mov_ld(dc, r, m)
 
 /**
+ * This platform-independent macro creates an instr_t which loads 1 byte
+ * from memory, zero-extends it to 4 bytes, and writes it to a 4 byte
+ * destination register.
+ * \param dc  The void * dcontext used to allocate memory for the instr_t.
+ * \param r   The destination register opnd.
+ * \param m   The source memory opnd.
+ */
+#define XINST_CREATE_load_1byte_zext4(dc, r, m)  INSTR_CREATE_movzx(dc, r, m)
+
+/**
  * This platform-independent macro creates an instr_t for a 1-byte
  * memory load instruction.
  * \param dc  The void * dcontext used to allocate memory for the instr_t.
@@ -315,7 +325,7 @@
  */
 #define XINST_CREATE_add(dc, d, s) \
   INSTR_CREATE_lea((dc), (d), OPND_CREATE_MEM_lea(opnd_get_reg(d), \
-    opnd_is_reg(s) ? opnd_get_reg(s) : DR_REG_NULL, 1, \
+    opnd_is_reg(s) ? opnd_get_reg(s) : DR_REG_NULL, 0, \
     opnd_is_reg(s) ? 0 : (int)opnd_get_immed_int(s)))
 
 /**
@@ -331,7 +341,7 @@
  */
 #define XINST_CREATE_add_2src(dc, d, s1, s2) \
   INSTR_CREATE_lea((dc), (d), OPND_CREATE_MEM_lea(opnd_get_reg(s1), \
-    opnd_is_reg(s2) ? opnd_get_reg(s2) : DR_REG_NULL, 1, \
+    opnd_is_reg(s2) ? opnd_get_reg(s2) : DR_REG_NULL, 0, \
     opnd_is_reg(s2) ? 0 : (int)opnd_get_immed_int(s2)))
 
 /**
@@ -362,7 +372,7 @@
  * \param d  The opnd_t explicit destination operand for the instruction.
  * \param s  The opnd_t explicit source operand for the instruction.
  */
-#define XINST_CREATE_sub_s(dc, d, s) INSTR_CREATE_sub((dc), OP_subs, (d), (s))
+#define XINST_CREATE_sub_s(dc, d, s) INSTR_CREATE_sub((dc), (d), (s))
 
 /**
  * This platform-independent macro creates an instr_t for a bitwise and
@@ -3922,9 +3932,10 @@
 
 /* 3 implicit destinations, 1 source */
 #define INSTR_CREATE_cpuid(dc) \
-  instr_create_4dst_1src((dc), OP_cpuid, opnd_create_reg(DR_REG_EAX), \
+  instr_create_4dst_2src((dc), OP_cpuid, opnd_create_reg(DR_REG_EAX), \
     opnd_create_reg(DR_REG_EBX), opnd_create_reg(DR_REG_ECX), \
-    opnd_create_reg(DR_REG_EDX), opnd_create_reg(DR_REG_EAX))
+    opnd_create_reg(DR_REG_EDX), opnd_create_reg(DR_REG_EAX), \
+    opnd_create_reg(DR_REG_ECX))
 /* @} */ /* end doxygen group */
 
 /* 3 implicit destinations, 3 implicit sources */

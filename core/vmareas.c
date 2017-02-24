@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2016 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2017 Google, Inc.  All rights reserved.
  * Copyright (c) 2002-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -1786,6 +1786,10 @@ vm_areas_exit()
 #endif
     vmvector_delete_vector(GLOBAL_DCONTEXT, IAT_areas);
     IAT_areas = NULL;
+
+    tamper_resistant_region_start = NULL;
+    tamper_resistant_region_end = NULL;
+
     return 0;
 }
 
@@ -2695,8 +2699,7 @@ add_executable_vm_area(app_pc start, app_pc end, uint vm_flags, uint frag_flags,
         if (TEST(FRAG_COARSE_GRAIN, frag_flags) && DYNAMO_OPTION(use_persisted) &&
             info == NULL
             /* if clients are present, don't load until after they're initialized */
-            IF_CLIENT_INTERFACE(&& (dynamo_initialized ||
-                                    IS_INTERNAL_STRING_OPTION_EMPTY(client_lib)))) {
+            IF_CLIENT_INTERFACE(&& (dynamo_initialized || !CLIENTS_EXIST()))) {
             info = vm_area_load_coarse_unit(&start, &end, vm_flags, frag_flags, false
                                             _IF_DEBUG(comment));
         }
@@ -2795,7 +2798,7 @@ vm_area_delay_load_coarse_units(void)
     ASSERT(!dynamo_initialized);
     if (!DYNAMO_OPTION(use_persisted) ||
         /* we already loaded if there's no client */
-        IS_INTERNAL_STRING_OPTION_EMPTY(client_lib))
+        !CLIENTS_EXIST())
         return;
     write_lock(&executable_areas->lock);
     for (i = 0; i < executable_areas->length; i++) {
@@ -4407,7 +4410,7 @@ security_violation_internal_main(dcontext_t *dcontext, app_pc addr,
     /* Case 9712: Inform the client of the security violation and
      * give it a chance to modify the action.
      */
-    if (!IS_INTERNAL_STRING_OPTION_EMPTY(client_lib)) {
+    if (CLIENTS_EXIST()) {
         instrument_security_violation(dcontext, addr, violation_type, &action);
     }
 #endif
@@ -7346,6 +7349,7 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
         /* ok to hold onto pointer since it's this thread's */
         area = local_area;
     } else {
+        bool is_allocated_mem;
         /* not in this thread's current executable list
          * try the global executable area list
          */
@@ -7434,6 +7438,31 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
                       IF_HOTP(&& (!DYNAMO_OPTION(hot_patching) ||
                                   self_owns_write_lock(hotp_get_lock())))));
         ASSERT(!ok || area != NULL);
+        is_allocated_mem = get_memory_info(pc, &base_pc, &size, &prot);
+        /* i#2135 : it can be a guard page if either ok or not ok
+         * so we have to get protection value right now
+         */
+#ifdef WINDOWS
+        if (TEST(DR_MEMPROT_GUARD, prot)) {
+            /* remove protection so as to go on */
+            if (unmark_page_as_guard(pc, prot)) {
+                /* We test that there was still the guard protection to remove.
+                 * Otherwise, there could be a race condition with
+                 * two threads trying to execute from the guarded page
+                 * and we would raise two exceptions instead of one.
+                 */
+                SYSLOG_INTERNAL_WARNING("Application tried to execute "
+                                        "from guard memory "PFX".\n", pc);
+                check_thread_vm_area_cleanup(dcontext, true/*abort*/,
+                                             true/*clean bb*/, data, vmlist,
+                                             own_execareas_writelock,
+                                             caller_execareas_writelock);
+                os_forge_exception(pc, GUARD_PAGE_EXCEPTION);
+                ASSERT_NOT_REACHED();
+            }
+        }
+#endif
+
         if (!ok) {
             /* we no longer allow execution from arbitrary dr mem, our dll is
              * on the executable list and we specifically add the callback
@@ -7444,7 +7473,6 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
              * unreadable (and so we don't want to follow a direct cti there
              * until the app actually does)
              */
-            bool is_allocated_mem = get_memory_info(pc, &base_pc, &size, &prot);
             bool is_being_unloaded = false;
 
 #ifdef CLIENT_INTERFACE

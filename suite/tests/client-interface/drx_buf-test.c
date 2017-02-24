@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2016 Google, Inc.  All rights reserved.
+ * Copyright (c) 2016-2017 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -99,11 +99,9 @@ main(void)
      */
 #if defined(UNIX)
     pthread_t thread;
-    intercept_signal(SIGSEGV, (handler_3_t)&handle_signal, false);
 #elif defined(WINDOWS)
     HANDLE thread;
     DWORD threadId;
-    SetUnhandledExceptionFilter(&handle_exception);
 #endif
 
     print("Starting drx_buf threaded test\n");
@@ -121,6 +119,14 @@ main(void)
     CloseHandle(thread);
 #endif
     print("Ending drx_buf threaded test\n");
+
+    /* install signals */
+#if defined(UNIX)
+    intercept_signal(SIGSEGV, (handler_3_t)&handle_signal, false);
+#elif defined(WINDOWS)
+    SetUnhandledExceptionFilter(&handle_exception);
+#endif
+
     print("Starting drx_buf signal test\n");
     /* try to cause a segfault and make sure it didn't trigger the buffer to dump */
     if (SIGSETJMP(mark) == 0) {
@@ -177,25 +183,27 @@ GLOBAL_LABEL(FUNCNAME:)
         pop      REG_XBP
         pop      REG_XBX
         ret
-#elif defined(ARM)
+#elif defined(AARCHXX)
         b        test1
         /* Test 1: test the fast circular buffer */
      test1:
-        movw     TEST_REG_ASM, DRX_BUF_TEST_1_ASM
-        movw     TEST_REG_ASM, DRX_BUF_TEST_1_ASM
+        MOV16    TEST_REG_ASM, DRX_BUF_TEST_1_ASM
+        MOV16    TEST_REG_ASM, DRX_BUF_TEST_1_ASM
         b        test2
         /* Test 2: test the slow circular buffer */
      test2:
-        movw     TEST_REG_ASM, DRX_BUF_TEST_2_ASM
-        movw     TEST_REG_ASM, DRX_BUF_TEST_2_ASM
+        MOV16    TEST_REG_ASM, DRX_BUF_TEST_2_ASM
+        MOV16    TEST_REG_ASM, DRX_BUF_TEST_2_ASM
         b        test3
         /* Test 3: test the faulting buffer */
      test3:
-        movw     TEST_REG_ASM, DRX_BUF_TEST_3_ASM
-        movw     TEST_REG_ASM, DRX_BUF_TEST_3_ASM
+        MOV16    TEST_REG_ASM, DRX_BUF_TEST_3_ASM
+        MOV16    TEST_REG_ASM, DRX_BUF_TEST_3_ASM
         b        epilog1
     epilog1:
-        bx       lr
+        RETURN
+#else
+# error NYI
 #endif
         END_FUNC(FUNCNAME)
 #undef FUNCNAME
@@ -222,6 +230,11 @@ GLOBAL_LABEL(FUNCNAME:)
      test5:
         mov      TEST_REG_ASM, DRX_BUF_TEST_5_ASM
         mov      TEST_REG_ASM, DRX_BUF_TEST_5_ASM
+        jmp      test6
+        /* Test 6: test drx_buf_insert_buf_memcpy() */
+     test6:
+        mov      TEST_REG_ASM, DRX_BUF_TEST_6_ASM
+        mov      TEST_REG_ASM, DRX_BUF_TEST_6_ASM
         jmp      epilog2
      epilog2:
         add      REG_XSP, FRAME_PADDING /* make a legal SEH64 epilog */
@@ -230,20 +243,27 @@ GLOBAL_LABEL(FUNCNAME:)
         pop      REG_XBP
         pop      REG_XBX
         ret
-#elif defined(ARM)
+#elif defined(AARCHXX)
         b        test4
         /* Test 4: test store registers */
      test4:
-        movw     TEST_REG_ASM, DRX_BUF_TEST_4_ASM
-        movw     TEST_REG_ASM, DRX_BUF_TEST_4_ASM
+        MOV16    TEST_REG_ASM, DRX_BUF_TEST_4_ASM
+        MOV16    TEST_REG_ASM, DRX_BUF_TEST_4_ASM
         b        test5
         /* Test 5: test store immediates */
      test5:
-        movw     TEST_REG_ASM, DRX_BUF_TEST_5_ASM
-        movw     TEST_REG_ASM, DRX_BUF_TEST_5_ASM
+        MOV16    TEST_REG_ASM, DRX_BUF_TEST_5_ASM
+        MOV16    TEST_REG_ASM, DRX_BUF_TEST_5_ASM
+        b        test6
+        /* Test 6: test drx_buf_insert_buf_memcpy() */
+     test6:
+        MOV16    TEST_REG_ASM, DRX_BUF_TEST_6_ASM
+        MOV16    TEST_REG_ASM, DRX_BUF_TEST_6_ASM
         b        epilog2
     epilog2:
-        bx       lr
+        RETURN
+#else
+# error NYI
 #endif
         END_FUNC(FUNCNAME)
 #undef FUNCNAME

@@ -59,12 +59,6 @@ disable_compiler_warnings()
 # Extensions don't include configure.h so they don't get DR defines
 add_dr_defines()
 
-if (STATIC_LIBRARY)
-  set(libtype STATIC)
-else()
-  set(libtype SHARED)
-endif ()
-
 # This lets us share common code among all extensions.  We use a macro to
 # avoid scope issues and avoid having to call configure_DynamoRIO_global().
 macro(configure_extension target is_static)
@@ -107,10 +101,10 @@ macro(install_ext_header header)
 endmacro()
 
 add_subdirectory(drcontainers)
-if (NOT ANDROID AND NOT ARM)
+if (NOT ANDROID AND NOT ARM AND NOT AARCH64)
   # XXX i#1701: fails to build on Android.  May not be worth porting.
-  # XXX: failing when cross-compiling for ARM on a machine with x86 Qt5 installing.
-  # Working around that by just disabling for ARM completely.
+  # XXX: fails when cross-compiling for ARM or A64 on a machine with x86 Qt5 installing.
+  # Working around that by just disabling for ARM and A64 completely.
   add_subdirectory(drgui)
 endif ()
 add_subdirectory(drmgr)

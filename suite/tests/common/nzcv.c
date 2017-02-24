@@ -88,23 +88,29 @@ main()
 #include "asm_defines.asm"
 START_FILE
 
+#ifdef X64
+# define READ_NZCV(reg) mrs reg, nzcv
+# define WRITE_NZCV(reg) msr nzcv, reg
+#else
+# define READ_NZCV(reg) mrs reg, apsr; and reg, reg, HEX(f0000000)
+# define WRITE_NZCV(reg) msr apsr_nzcvq, reg /* also writes Q bit */
+#endif
+
 DECL_EXTERN(test_flag)
 
 #define FUNCNAME test_nzcv_pos
         DECLARE_FUNC(FUNCNAME)
 GLOBAL_LABEL(FUNCNAME:)
-        mov     x19,    ARG1
-        mov     x20,    x30
-        CALLC1(GLOBAL_REF(set_flag), x19)
-        mrs     x0,     nzcv
-        mov     w1,     w19
-        CALLC3(GLOBAL_REF(test_flag), x0, x1, 1)
-        CALLC1(GLOBAL_REF(clear_flag), x19)
-        mrs     x0,     nzcv
-        mov     w1,     w19
-        CALLC3(GLOBAL_REF(test_flag), x0, x1, 0)
-        mov     x30,     x20
-        ret
+        SAVE_PRESERVED_REGS
+        mov      REG_PRESERVED_1, ARG1
+        CALLC1(GLOBAL_REF(set_flag), REG_PRESERVED_1)
+        READ_NZCV(ARG1)
+        CALLC3(GLOBAL_REF(test_flag), ARG1, REG_PRESERVED_1, #1)
+        CALLC1(GLOBAL_REF(clear_flag), REG_PRESERVED_1)
+        READ_NZCV(ARG1)
+        CALLC3(GLOBAL_REF(test_flag), ARG1, REG_PRESERVED_1, #0)
+        RESTORE_PRESERVED_REGS
+        RETURN
         END_FUNC(FUNCNAME)
 
     /* void set_flag(uint pos) */
@@ -112,12 +118,12 @@ GLOBAL_LABEL(FUNCNAME:)
 #define FUNCNAME set_flag
         DECLARE_FUNC(FUNCNAME)
 GLOBAL_LABEL(FUNCNAME:)
-        mov     w1,     #1
-        lsl     w1,     w1, w0
-        mrs     x0,     nzcv
-        orr     w0,     w0, w1
-        msr     nzcv,   x0
-        ret
+        mov      ARG2, #1
+        lsl      ARG2, ARG2, ARG1
+        READ_NZCV(ARG1)
+        orr      ARG1, ARG1, ARG2
+        WRITE_NZCV(ARG1)
+        RETURN
         END_FUNC(FUNCNAME)
 
     /* void clear_flag(uint pos) */
@@ -125,13 +131,13 @@ GLOBAL_LABEL(FUNCNAME:)
 #define FUNCNAME clear_flag
         DECLARE_FUNC(FUNCNAME)
 GLOBAL_LABEL(FUNCNAME:)
-        mov     w1,     #1
-        lsl     w1,     w1, w0
-        mvn     w1,     w1
-        mrs     x0,     nzcv
-        and     w0,     w0, w1
-        msr     nzcv,   x0
-        ret
+        mov      ARG2, #1
+        lsl      ARG2, ARG2, ARG1
+        mvn      ARG2, ARG2
+        READ_NZCV(ARG1)
+        and      ARG1, ARG1, ARG2
+        WRITE_NZCV(ARG1)
+        RETURN
         END_FUNC(FUNCNAME)
 
 END_FILE

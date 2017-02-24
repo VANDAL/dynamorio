@@ -53,6 +53,7 @@
  * get_windows_version() in suite/tests/tools.c, defines in libutil/mfapi.h,
  * and get_platform() in libutil/utils.c.
  */
+#define WINDOWS_VERSION_10_1607 102 /* 10.2 is artificial */
 #define WINDOWS_VERSION_10_1511 101 /* 10.1 is artificial */
 #define WINDOWS_VERSION_10      100
 #define WINDOWS_VERSION_8_1      63
@@ -216,6 +217,7 @@ void print_dynamo_regions(void);
 size_t get_allocation_size(byte *pc, byte **base_pc);
 byte *get_allocation_base(byte *pc);
 void mark_page_as_guard(byte *pc);
+bool unmark_page_as_guard(byte *pc, uint prot);
 
 bool
 os_find_free_code_space_in_libs(void **start OUT, void **end OUT);
@@ -227,6 +229,8 @@ bool is_phandle_me(HANDLE phandle);
 
 extern bool intercept_asynch;
 extern bool intercept_callbacks;
+extern volatile bool init_apc_go_native_pause;
+extern volatile bool init_apc_go_native;
 extern process_id_t win32_pid;
 extern void *peb_ptr; /* not exposing type in case not including ntdll.h */
 
@@ -390,13 +394,15 @@ enum {
 /* sets detach in motion and never returns */
 void detach_internal_synch(void);
 void detach_internal(void);
+bool detach_handle_callbacks(int num_threads, thread_record_t **threads,
+                             bool *cleanup_tpc /* array of size num_threads */);
+void detach_remove_image_entry_hook(int num_threads, thread_record_t **threads);
 enum {
     DETACH_NORMAL_TYPE          =  0,
     DETACH_BAD_STATE            = -1,
     DETACH_BAD_STATE_NO_CLEANUP = -2,
 };
 void detach_helper(int detach_type); /* needs to be exported for nudge.c */
-extern bool doing_detach;
 
 void early_inject_init(void);
 bool earliest_inject_init(byte *arg_ptr);

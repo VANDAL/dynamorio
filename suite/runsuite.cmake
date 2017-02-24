@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2010-2016 Google, Inc.    All rights reserved.
+# Copyright (c) 2010-2017 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
@@ -45,16 +45,20 @@ include("${CTEST_SCRIPT_DIRECTORY}/runsuite_common_pre.cmake")
 # extra args (note that runsuite_common_pre.cmake has already walked
 # the list and did not remove its args so be sure to avoid conflicts).
 set(arg_travis OFF)
+set(cross_only OFF)
 foreach (arg ${CTEST_SCRIPT_ARG})
   if (${arg} STREQUAL "travis")
     set(arg_travis ON)
+    if ($ENV{DYNAMORIO_CROSS_ONLY} MATCHES "yes")
+      set(cross_only ON)
+    endif()
   endif ()
 endforeach (arg)
 
 if (arg_travis)
   # XXX i#1801, i#1962: under clang we have several failing tests.  Until those are
   # fixed, our Travis clang suite only builds and does not run tests.
-  if (NOT APPLE AND $ENV{CC} MATCHES "clang")
+  if (UNIX AND NOT APPLE AND "$ENV{CC}" MATCHES "clang")
     set(run_tests OFF)
     message("Detected a Travis clang suite: disabling running of tests")
   endif ()
@@ -127,13 +131,15 @@ else ()
             OUTPUT_VARIABLE git_out)
         endif ()
         if (git_result OR git_err)
-          message(FATAL_ERROR "*** ${GIT} remote -v failed: ***\n${git_err}")
+          # Not a fatal error as this can happen when mixing cygwin and windows git.
+          message(STATUS "${GIT} remote -v failed: ${git_err}")
+          set(git_out OFF)
         endif (git_result OR git_err)
         if (NOT git_out)
           # No remotes set up: we assume this is a custom git setup that
           # is only likely to get used on our buildbots, so we skip
           # the diff checks.
-          message("No remotes set up so cannot diff and must skip content checks.  Assuming this is a buildbot.")
+          message(STATUS "No remotes set up so cannot diff and must skip content checks.  Assuming this is a buildbot.")
           set(diff_contents "")
         else ()
           message(FATAL_ERROR "*** Unable to retrieve diff for content checks: do you have a custom remote setup?")
@@ -180,103 +186,115 @@ endif ()
 # (since building takes forever on windows): so we only turn
 # on BUILD_TESTS for TEST_LONG or debug-internal-{32,64}
 
-# For cross-arch execve test we need to "make install"
-testbuild_ex("debug-internal-32" OFF "
-  DEBUG:BOOL=ON
-  INTERNAL:BOOL=ON
-  BUILD_TESTS:BOOL=ON
-  ${install_path_cache}
-  " OFF ON "${install_build_args}")
-testbuild_ex("debug-internal-64" ON "
-  DEBUG:BOOL=ON
-  INTERNAL:BOOL=ON
-  BUILD_TESTS:BOOL=ON
-  ${install_path_cache}
-  TEST_32BIT_PATH:PATH=${last_build_dir}/suite/tests/bin
-  " OFF ON "${install_build_args}")
-# we don't really support debug-external anymore
-if (DO_ALL_BUILDS_NOT_SUPPORTED)
-  testbuild("debug-external-64" ON "
+if (NOT cross_only)
+  # For cross-arch execve test we need to "make install"
+  testbuild_ex("debug-internal-32" OFF "
     DEBUG:BOOL=ON
-    INTERNAL:BOOL=OFF
-    ")
-  testbuild("debug-external-32" OFF "
+    INTERNAL:BOOL=ON
+    BUILD_TESTS:BOOL=ON
+    ${install_path_cache}
+    " OFF ON "${install_build_args}")
+  if (last_build_dir MATCHES "-32")
+    set(32bit_path "TEST_32BIT_PATH:PATH=${last_build_dir}/suite/tests/bin")
+  else ()
+    set(32bit_path "")
+  endif ()
+  testbuild_ex("debug-internal-64" ON "
     DEBUG:BOOL=ON
+    INTERNAL:BOOL=ON
+    BUILD_TESTS:BOOL=ON
+    ${install_path_cache}
+    ${32bit_path}
+    " OFF ON "${install_build_args}")
+  # we don't really support debug-external anymore
+  if (DO_ALL_BUILDS_NOT_SUPPORTED)
+    testbuild("debug-external-64" ON "
+      DEBUG:BOOL=ON
+      INTERNAL:BOOL=OFF
+      ")
+    testbuild("debug-external-32" OFF "
+      DEBUG:BOOL=ON
+      INTERNAL:BOOL=OFF
+      ")
+  endif ()
+  testbuild_ex("release-external-32" OFF "
+    DEBUG:BOOL=OFF
     INTERNAL:BOOL=OFF
-    ")
-endif ()
-testbuild_ex("release-external-32" OFF "
-  DEBUG:BOOL=OFF
-  INTERNAL:BOOL=OFF
-  ${install_path_cache}
-  " OFF OFF "${install_build_args}")
-testbuild_ex("release-external-64" ON "
-  DEBUG:BOOL=OFF
-  INTERNAL:BOOL=OFF
-  ${install_path_cache}
-  TEST_32BIT_PATH:PATH=${last_build_dir}/suite/tests/bin
-  " OFF OFF "${install_build_args}")
-if (DO_ALL_BUILDS)
-  # we rarely use internal release builds but keep them working in long
-  # suite (not much burden) in case we need to tweak internal options
-  testbuild("release-internal-32" OFF "
-    DEBUG:BOOL=OFF
-    INTERNAL:BOOL=ON
     ${install_path_cache}
-    ")
-  testbuild("release-internal-64" ON "
+    " OFF OFF "${install_build_args}")
+  if (last_build_dir MATCHES "-32")
+    set(32bit_path "TEST_32BIT_PATH:PATH=${last_build_dir}/suite/tests/bin")
+  else ()
+    set(32bit_path "")
+  endif ()
+  testbuild_ex("release-external-64" ON "
     DEBUG:BOOL=OFF
-    INTERNAL:BOOL=ON
+    INTERNAL:BOOL=OFF
     ${install_path_cache}
-    ")
-endif (DO_ALL_BUILDS)
-# non-official-API builds but not all are in pre-commit suite on Windows
-# where building is slow: we'll rely on bots to catch breakage in most of these
-# builds on Windows
-if (ARCH_IS_X86 AND NOT APPLE)
-  # we do not bother to support these on ARM
-  if (UNIX OR DO_ALL_BUILDS)
-    testbuild("vmsafe-debug-internal-32" OFF "
+    ${32bit_path}
+    " OFF OFF "${install_build_args}")
+  if (DO_ALL_BUILDS)
+    # we rarely use internal release builds but keep them working in long
+    # suite (not much burden) in case we need to tweak internal options
+    testbuild("release-internal-32" OFF "
+      DEBUG:BOOL=OFF
+      INTERNAL:BOOL=ON
+      ${install_path_cache}
+      ")
+    testbuild("release-internal-64" ON "
+      DEBUG:BOOL=OFF
+      INTERNAL:BOOL=ON
+      ${install_path_cache}
+      ")
+  endif (DO_ALL_BUILDS)
+  # Non-official-API builds but not all are in pre-commit suite, esp on Windows
+  # where building is slow: we'll rely on bots to catch breakage in most of these
+  # builds.
+  if (ARCH_IS_X86 AND NOT APPLE)
+    # we do not bother to support these on ARM
+    if (DO_ALL_BUILDS)
+      testbuild("vmsafe-debug-internal-32" OFF "
+        VMAP:BOOL=OFF
+        VMSAFE:BOOL=ON
+        DEBUG:BOOL=ON
+        INTERNAL:BOOL=ON
+        ${install_path_cache}
+        ")
+    endif ()
+    if (DO_ALL_BUILDS)
+      testbuild("vmsafe-release-external-32" OFF "
+        VMAP:BOOL=OFF
+        VMSAFE:BOOL=ON
+        DEBUG:BOOL=OFF
+        INTERNAL:BOOL=OFF
+        ${install_path_cache}
+        ")
+    endif (DO_ALL_BUILDS)
+    testbuild("vps-debug-internal-32" OFF "
       VMAP:BOOL=OFF
-      VMSAFE:BOOL=ON
+      VPS:BOOL=ON
       DEBUG:BOOL=ON
       INTERNAL:BOOL=ON
       ${install_path_cache}
       ")
-  endif ()
-  if (DO_ALL_BUILDS)
-    testbuild("vmsafe-release-external-32" OFF "
-      VMAP:BOOL=OFF
-      VMSAFE:BOOL=ON
-      DEBUG:BOOL=OFF
-      INTERNAL:BOOL=OFF
-      ${install_path_cache}
-      ")
-  endif (DO_ALL_BUILDS)
-  testbuild("vps-debug-internal-32" OFF "
-    VMAP:BOOL=OFF
-    VPS:BOOL=ON
-    DEBUG:BOOL=ON
-    INTERNAL:BOOL=ON
-    ${install_path_cache}
-    ")
-  if (DO_ALL_BUILDS)
-    testbuild("vps-release-external-32" OFF "
-      VMAP:BOOL=OFF
-      VPS:BOOL=ON
-      DEBUG:BOOL=OFF
-      INTERNAL:BOOL=OFF
-      ${install_path_cache}
-      ")
-    # Builds we'll keep from breaking but not worth running many tests
-    testbuild("callprof-32" OFF "
-      CALLPROF:BOOL=ON
-      DEBUG:BOOL=OFF
-      INTERNAL:BOOL=OFF
-      ${install_path_cache}
-      ")
-  endif (DO_ALL_BUILDS)
-endif (ARCH_IS_X86 AND NOT APPLE)
+    if (DO_ALL_BUILDS)
+      testbuild("vps-release-external-32" OFF "
+        VMAP:BOOL=OFF
+        VPS:BOOL=ON
+        DEBUG:BOOL=OFF
+        INTERNAL:BOOL=OFF
+        ${install_path_cache}
+        ")
+      # Builds we'll keep from breaking but not worth running many tests
+      testbuild("callprof-32" OFF "
+        CALLPROF:BOOL=ON
+        DEBUG:BOOL=OFF
+        INTERNAL:BOOL=OFF
+        ${install_path_cache}
+        ")
+    endif (DO_ALL_BUILDS)
+  endif (ARCH_IS_X86 AND NOT APPLE)
+endif (NOT cross_only)
 
 if (UNIX AND ARCH_IS_X86)
   # Optional cross-compilation for ARM/Linux and ARM/Android if the cross
@@ -295,12 +313,12 @@ if (UNIX AND ARCH_IS_X86)
     INTERNAL:BOOL=OFF
     CMAKE_TOOLCHAIN_FILE:PATH=${CTEST_SOURCE_DIRECTORY}/make/toolchain-arm32.cmake
     " OFF OFF "")
-  testbuild_ex("arm-debug-internal-64" OFF "
+  testbuild_ex("arm-debug-internal-64" ON "
     DEBUG:BOOL=ON
     INTERNAL:BOOL=ON
     CMAKE_TOOLCHAIN_FILE:PATH=${CTEST_SOURCE_DIRECTORY}/make/toolchain-arm64.cmake
     " OFF OFF "")
-  testbuild_ex("arm-release-external-64" OFF "
+  testbuild_ex("arm-release-external-64" ON "
     DEBUG:BOOL=OFF
     INTERNAL:BOOL=OFF
     CMAKE_TOOLCHAIN_FILE:PATH=${CTEST_SOURCE_DIRECTORY}/make/toolchain-arm64.cmake

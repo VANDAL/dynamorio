@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2015 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2017 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -610,6 +610,7 @@ struct _thread_locks_t;
 typedef struct _thread_locks_t thread_locks_t;
 
 extern mutex_t outermost_lock;
+extern mutex_t innermost_lock;
 
 void locks_thread_init(dcontext_t *dcontext);
 void locks_thread_exit(dcontext_t *dcontext);
@@ -1230,12 +1231,13 @@ const char *get_short_name(const char *exename);
  * FIXME: this means that if the protection routines call a routine that has
  * a do-once, we have a deadlock!  Could switch to a recursive lock.
  */
+extern int do_once_generation; /* for possible re-attach */
 #define DO_ONCE(statement) {                                    \
         /* no mutual exclusion, should be used only with logging */      \
         static int do_once = 0;                                 \
-        if (!do_once) {                                         \
+        if (do_once < do_once_generation) {                                         \
                 SELF_UNPROTECT_DATASEC(DATASEC_RARELY_PROT);\
-                do_once = 1;                                    \
+                do_once++;                                    \
                 SELF_PROTECT_DATASEC(DATASEC_RARELY_PROT);  \
                 statement;                                      \
         }                                                       \

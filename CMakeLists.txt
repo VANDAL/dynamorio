@@ -296,17 +296,6 @@ if (VPS)
   endif (WIN32)
 endif (VPS)
 
-# i#975: revived support for STATIC_LIBRARY.
-# FIXME: we need to implement takeover on Windows with .CRT$XCU.
-# i#1793: the tests do not build anymore: abandoning official support,
-# but leaving the code in the repo as we may want to revive it again later.
-option(STATIC_LIBRARY "build DR statically (not fully supported)")
-if (STATIC_LIBRARY)
-  set(SHARED_OR_STATIC STATIC)
-else ()
-  set(SHARED_OR_STATIC SHARED)
-endif ()
-
 # temporary: once build+support issues fixed, remove and add HOT_PATCHING_INTERFACE
 # to VMAP by default
 option(PROBE "enable not-yet-supported Probe API")
@@ -518,7 +507,7 @@ endif (EXISTS "${PROJECT_SOURCE_DIR}/.svn")
 # N.B.: if VERSION_NUMBER's major number is incremented without also
 # incrementing OLDEST_COMPATIBLE_VERSION we'll need to add another
 # symlink loop in core/CMakeLists.txt
-set(VERSION_NUMBER_DEFAULT "6.1.${VERSION_NUMBER_PATCHLEVEL}")
+set(VERSION_NUMBER_DEFAULT "6.2.${VERSION_NUMBER_PATCHLEVEL}")
 # do not store the default VERSION_NUMBER in the cache to prevent a stale one
 # from preventing future version updates in a pre-existing build dir
 set(VERSION_NUMBER "" CACHE STRING "Version number: leave empty for default")
@@ -692,12 +681,18 @@ macro(add_static_lib_debug_info target dest_dir)
 endmacro()
 
 # compiler flags
+# BASE_CFLAGS applies to both C and C++.
+# BASE_CONLY_FLAGS applies to just C.
+# BASE_CXXONLY_FLAGS applies to just C++.
+set(BASE_CFLAGS "")
+set(BASE_CONLY_FLAGS "")
+set(BASE_CXXONLY_FLAGS "")
 if (UNIX)
   # -std=c99 doesn't quite work
   # FIXME case 191480: we used to pass -pedantic just to cpp;
   # now w/ no separate cpp step we should eliminate the
   # warnings and pass -pedantic to main gcc
-  set(BASE_CFLAGS "-std=gnu99")
+  set(BASE_CONLY_FLAGS "${BASE_CONLY_FLAGS} -std=gnu99")
   # disable strict aliasing opt in gcc 3.3.3 -- gives warnings and makes bad assumptions
   set(BASE_CFLAGS "${BASE_CFLAGS} -fno-strict-aliasing")
   # Ubuntu defaults to -fstack-protector these days, which depends on app TLS.
@@ -709,17 +704,14 @@ if (UNIX)
   if (X86)
     if (X64)
       set(BASE_CFLAGS "-m64 ${BASE_CFLAGS}")
-      set(BASE_CXXFLAGS "-m64")
       set(LD_FLAGS "-melf_x86_64")
     else (X64)
       set(BASE_CFLAGS "-m32 ${BASE_CFLAGS}")
-      set(BASE_CXXFLAGS "-m32")
       # i#847 keep stack boundary 4-byte aligned (except on Mac)
       # XXX i#1800: clang does not support -mpreferred-stack-boundary=2 or
       # an equivalent flag, so clang's build may not run legacy binaries.
       if (NOT CMAKE_COMPILER_IS_CLANG)
         set(BASE_CFLAGS "${BASE_CFLAGS} -mpreferred-stack-boundary=2")
-        set(BASE_CXXFLAGS "${BASE_CXXFLAGS} -mpreferred-stack-boundary=2")
       elseif (NOT APPLE)
         message(STATUS "WARNING: 32-bit clang lacks stack alignment control:")
         message(STATUS "  resulting build may not run all apps correctly")
@@ -731,7 +723,6 @@ if (UNIX)
     if (X64)
     else (X64)
       set(BASE_CFLAGS "-mthumb -march=armv7-a ${BASE_CFLAGS}")
-      set(BASE_CXXFLAGS "-mthumb -march=armv7-a")
       set(LD_FLAGS "-marmelf_linux_eabi")
       if (ANDROID OR CMAKE_C_LIBRARY_ARCHITECTURE MATCHES "gnueabi$")
         # We use eabihf by default for ARM build.
@@ -742,13 +733,15 @@ if (UNIX)
         # so we use softfp for Android build instead.
         # We also need to add softfp for the gnueabi target.
         set(BASE_CFLAGS "-mfloat-abi=softfp ${BASE_CFLAGS}")
-        set(BASE_CXXFLAGS "-mfloat-abi=softfp ${BASE_CXXFLAGS}")
       endif ()
     endif (X64)
   endif ()
   if (APPLE AND CMAKE_COMPILER_IS_CLANG)
     # Ensure our binaries can run on older OSX
-    set(BASE_CFLAGS "${BASE_CFLAGS} -mmacosx-version-min=10.7")
+    # We're building our release package on 10.11, and that XCode does not
+    # supply C++ libraries for below 10.9, causing drcachesim to fail to build.
+    # Thus we have abandoned support for below 10.9.
+    set(BASE_CFLAGS "${BASE_CFLAGS} -mmacosx-version-min=10.9")
   endif ()
   if (APPLE)
     set(ld_entry_flag "-e")
@@ -774,9 +767,7 @@ if (UNIX)
     if (CLANG_COLOR_DIAGNOSTICS)
       set(clang_args "-fcolor-diagnostics ${clang_args}")
     endif (CLANG_COLOR_DIAGNOSTICS)
-    # Apply to both C and C++.
     set(BASE_CFLAGS "${clang_args} ${BASE_CFLAGS}")
-    set(BASE_CXXFLAGS "${clang_args} ${BASE_CXXFLAGS}")
   endif (NOT CMAKE_COMPILER_IS_CLANG)
   set(DBG "-g3")
   # gcc doesn't change its optimizations based on -g
@@ -820,7 +811,7 @@ if (UNIX)
   set(LINK_DBG "")
 else (UNIX)
   # FIXME: why isn't ${CMAKE_CL_NOLOGO} set?
-  set(BASE_CFLAGS "/nologo")
+  set(BASE_CFLAGS "${BASE_CFLAGS} /nologo")
   # build in parallel, always.
   # note that /MP is not officially supported on VS 2005 and others
   # have seen occasional problems: we'll risk it.  we could check for
@@ -884,7 +875,6 @@ else (UNIX)
   # explicitly request /Od even though it's cl's default b/c VS has /O2 as default
   # and cl 14.00 hangs compiling core/fragment.c with /Od and DEBUG.
   set(DBG_OPT "/Od")
-  set(BASE_CXXFLAGS "${BASE_CFLAGS}")
   if (NOT "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
     # i#1821: cmake 3.3.1 (but not 2.8.12) somehow messes up this /nologo flag.
     # We just avoid it for VS generators as a workaround.
@@ -925,7 +915,6 @@ if (UNIX)
 
   if (VISIBILITY)
     set(BASE_CFLAGS "${BASE_CFLAGS} -fvisibility=${VISIBILITY}")
-    set(BASE_CXXFLAGS "${BASE_CXXFLAGS} -fvisibility=${VISIBILITY}")
     set(HAVE_FVISIBILITY ON)
   endif (VISIBILITY)
 
@@ -1071,16 +1060,16 @@ endif (UNIX)
 #   Release => -O3 -NDEBUG
 # Right now we only support gcc and cl but could change in future
 if (DEBUG)
-  set(CMAKE_C_FLAGS "${BASE_CFLAGS} ${DBG} ${DBG_OPT}")
-  set(CMAKE_CXX_FLAGS "${BASE_CXXFLAGS} ${DBG} ${DBG_OPT}")
+  set(CMAKE_C_FLAGS "${BASE_CFLAGS} ${BASE_CONLY_FLAGS} ${DBG} ${DBG_OPT}")
+  set(CMAKE_CXX_FLAGS "${BASE_CFLAGS} ${BASE_CXXONLY_CFLAGS} ${DBG} ${DBG_OPT}")
 else (DEBUG)
   if (CALLPROF)
     # no opts -- we need to avoid messing up call frame walking
     # FIXME: just disable frame ptr elim opt: but /Oy- ran into some issues
     set (OPT "")
   endif (CALLPROF)
-  set(CMAKE_C_FLAGS "${BASE_CFLAGS} ${OPT}")
-  set(CMAKE_CXX_FLAGS "${BASE_CXXFLAGS} ${OPT}")
+  set(CMAKE_C_FLAGS "${BASE_CFLAGS} ${BASE_CONLY_FLAGS} ${OPT}")
+  set(CMAKE_CXX_FLAGS "${BASE_CFLAGS} ${BASE_CXXONLY_CFLAGS} ${OPT}")
 endif (DEBUG)
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${LINK_DBG}")
 set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} ${LINK_DBG}")
@@ -1166,6 +1155,7 @@ endfunction (install_target)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/${INSTALL_LIB_BASE}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
 set(DR_LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/${INSTALL_LIB}")
+set(DR_LIBRARY_BASE_DIRECTORY "${PROJECT_BINARY_DIR}/${INSTALL_LIB_BASE}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/${INSTALL_BIN}")
 # if drinjectlib is built before any exe target this dir won't exist
 # and the "cmake -E copy" will fail (PR 549174)
@@ -1592,6 +1582,40 @@ if (CLIENT_INTERFACE OR APP_EXPORTS)
   DR_install(DIRECTORY ${BUILD_INCLUDE} DESTINATION .
     REGEX "annotations/valgrind.h|annotations/memcheck.h" EXCLUDE)
 endif (CLIENT_INTERFACE OR APP_EXPORTS)
+
+# Used by tests in multiple places.
+if (BUILD_TESTS AND UNIX)
+  if (ANDROID)
+    # pthreads is inside Bionic on Android, and for some reason find_library() can't
+    # locate libm or libdl within the Android toolchain: we just assume they're there.
+    set(libmath m)
+    set(libdl dl)
+    set(libpthread "")
+  else ()
+    # i#720: cmake fails to find 32-bit libraries in Ubuntu 11.10.
+    # This is because cmake uses CMAKE_LIBRARY_ARCHITECTURE to handle
+    # multi-arch compilation, whose value is x86_64-linux-gnu or i386-linux-gnu
+    # for 64/32-bit. However, in Ubuntu 11.10, some of the 32-bit libraries
+    # like libm.so, libdl.so, and libpthread.so are in /usr/lib32 or /lib32
+    # instead of /lib/i386-linux-gnu, so cmake cannot to find them.
+    # solution: add explicit paths for lookup.
+    find_library(libmath m)
+    if (NOT libmath AND NOT X64)
+      find_library(libmath m PATHS /usr/lib32 /lib32)
+    endif ()
+    find_library(libdl dl)
+    if (NOT libdl AND NOT X64)
+      find_library(libdl dl PATHS /usr/lib32 /lib32)
+    endif ()
+    find_library(libpthread pthread)
+    if (NOT libpthread AND NOT X64)
+      find_library(libpthread pthread PATHS /usr/lib32 /lib32)
+    endif ()
+    if (NOT libmath OR NOT libdl OR NOT libpthread)
+      message(FATAL_ERROR "cannot find required libs m, dl, and/or pthread")
+    endif ()
+  endif ()
+endif ()
 
 if (BUILD_CLIENTS)
   # Must be prior to api/docs

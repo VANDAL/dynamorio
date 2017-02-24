@@ -216,11 +216,11 @@ instr_is_mov_constant(instr_t *instr, ptr_int_t *value)
      */
 
     /* movn/movz reg, imm */
-    /* FIXME i#1569: NYI */
-    if (false) {
+    if (opc == OP_movn || opc == OP_movz) {
         opnd_t op = instr_get_src(instr, 0);
         if (opnd_is_immed_int(op)) {
-            *value = opnd_get_immed_int(op);
+            ptr_int_t imm = opnd_get_immed_int(op);
+            *value = (opc == OP_movn ? ~imm : imm);
             return true;
         } else
             return false;
@@ -252,6 +252,21 @@ bool instr_is_prefetch(instr_t *instr)
 bool
 instr_saves_float_pc(instr_t *instr)
 {
+    return false;
+}
+
+/* Is this an instruction that we must intercept in order to detect a
+ * self-modifying program?
+ */
+bool
+instr_is_icache_op(instr_t *instr)
+{
+    int opc = instr_get_opcode(instr);
+#define SYS_ARG_IC_IVAU 0x1ba9
+    if (opc == OP_sys && opnd_get_immed_int(instr_get_src(instr, 0)) == SYS_ARG_IC_IVAU)
+        return true; /* ic ivau, xT */
+    if (opc == OP_isb)
+        return true; /* isb */
     return false;
 }
 
@@ -375,6 +390,16 @@ DR_API
 bool
 instr_is_exclusive_store(instr_t *instr)
 {
-    /* FIXME i#1569: NYI */
+    switch (instr_get_opcode(instr)) {
+    case OP_stlxp:
+    case OP_stlxr:
+    case OP_stlxrb:
+    case OP_stlxrh:
+    case OP_stxp:
+    case OP_stxr:
+    case OP_stxrb:
+    case OP_stxrh:
+        return true;
+    }
     return false;
 }

@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2012-2016 Google, Inc.  All rights reserved.
+ * Copyright (c) 2012-2017 Google, Inc.  All rights reserved.
  * Copyright (c) 2007-2009 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -83,9 +83,10 @@ The sample <a href="../../samples/inline.c">inline.c</a>
 performs an optimization that uses the custom trace API to inline
 entire callees into traces.
 
-The sample <a href="../../samples/inscount.c">inscount.c</a>
+The sample <a href="../../samples/inscount.cpp">inscount.cpp</a>
 reports the dynamic count of the total number of instructions executed via
 inserting performant clean calls which are auto-inlined by DynamoRIO.
+It also illustrates use of the \ref page_droption.
 
 The sample <a href="../../samples/instrace_simple.c">instrace_simple.c</a>
 is provided as an example client that illustrates how to gather an instruction
@@ -553,8 +554,8 @@ href="../../samples/inline.c">../../samples/inline.c</a>.
 ********************
 \subsection sec_ex6 Use of Floating Point Operation in a Client
 
-Because saving the floating point state is very expensive, DynamoRIO seeks
-to do so on an as needed basis.  If a client wishes to use floating point
+Because saving the floating point state is very expensive, on x86 DynamoRIO
+seeks to do so on an as needed basis.  If a client wishes to use floating point
 operations it must save and restore the application's floating point state
 around the usage.  For an inserted clean call out of the code cache, this
 can be conveniently done using dr_insert_clean_call() and passing true for
@@ -574,6 +575,9 @@ point state must be saved around calls to our provided printing routines
 when they are used to print floats.  However, it is not necessary to save
 and restore the floating point state around floating point operations if
 they are being used in the initialization or termination routines.
+
+On ARM and AArch64 the SIMD/FP registers are always saved, so
+proc_save_fpstate and proc_restore_fpstate are no-ops.
 
 This example client counts the number of basic blocks processed and keeps
 statistics on their average size using floating point operations. Full code

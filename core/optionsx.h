@@ -333,6 +333,7 @@
      * client option strings to matter, so we check this separately
      * from the general -persist_check_options
      */
+    /* This option is ignored for STATIC_LIBRARY. */
     OPTION_DEFAULT_INTERNAL(liststring_t, client_lib, EMPTY_STRING,
                             ";-separated string containing client "
                             "lib paths, IDs, and options")
@@ -342,9 +343,11 @@
      */
     /* XXX i#1285: MacOS private loader is NYI */
     OPTION_DEFAULT_INTERNAL(bool, private_loader,
-                            IF_MACOS_ELSE(false, true),
+                            /* i#2117: for UNIX static DR we disable TLS swaps. */
+                            IF_STATIC_LIBRARY_ELSE(IF_WINDOWS_ELSE(true, false),
+                                                   IF_MACOS_ELSE(false, true)),
                             "use private loader for clients and dependents")
-# ifdef UNIX
+#  ifdef UNIX
     /* We cannot know the total tls size when allocating tls in os_tls_init,
      * so use the runtime option to control the tls size.
      */
@@ -356,8 +359,8 @@
      */
     OPTION_DEFAULT_INTERNAL(bool, privload_register_gdb, true,
                             "register private loader DLLs with gdb")
-# endif
-# ifdef WINDOWS
+#  endif
+#  ifdef WINDOWS
     /* Heap isolation for private dll copies.  Valid only with -private_loader. */
     OPTION_DEFAULT_INTERNAL(bool, privlib_privheap, true,
                             "redirect heap usage by private libraries to DR heap")
@@ -367,70 +370,20 @@
      */
     OPTION_DEFAULT_INTERNAL(bool, private_peb, true,
                             "use private PEB + TEB fields for private libraries")
-# endif
+#  endif
 
     /* PR 200418: Code Manipulation API.  This option enables the code
      * manipulation events and sets some default options.  We can't
      * afford to check for this in our exported routines, so we allow
      * ourselves to be used as a utility or standalone library
      * regardless of this option.
+     * For the static library, we commit to use with code_api and enable
+     * it by default as it's more of a pain to set options with this model.
      */
-    OPTION_COMMAND_INTERNAL(bool, code_api, false, "code_api", {
+    OPTION_COMMAND_INTERNAL(bool, code_api, IF_STATIC_LIBRARY_ELSE(true, false),
+                            "code_api", {
         if (options->code_api) {
-            /* PR 202669: larger stack size since we're saving a 512-byte
-             * buffer on the stack when saving fp state.
-             * Also, C++ RTL initialization (even when a C++
-             * client does little else) can take a lot of stack space.
-             * Furthermore, dbghelp.dll usage via drsyms has been observed
-             * to require 36KB, which is already beyond the minimum to
-             * share gencode in the same 64K alloc as the stack.
-             *
-             * XXX: if we raise this beyond 56KB we should adjust the
-             * logic in heap_mmap_reserve_post_stack() to handle sharing the
-             * tail end of a multi-64K-region stack.
-             */
-            options->stack_size = MAX(options->stack_size, 56*1024);
-
-            /* For CI builds we'll disable elision by default since we
-             * expect most CI users will prefer a view of the
-             * instruction stream that's as unmodified as possible.
-             * Also xref PR 214169: eliding calls presents a confusing
-             * view of basic blocks since clients see both the call
-             * and the called function in the same block.  TODO PR
-             * 214169: pass both sides to the client and merge
-             * internally to get the best of both worlds.
-             */
-            options->max_elide_jmp = 0;
-            options->max_elide_call = 0;
-
-            /* indcall2direct causes problems with the code manip API,
-             * so disable by default (xref PR 214051 & PR 214169).
-             * Even if we address those issues, we may want to keep
-             * disabled if we expect users will be confused by this
-             * optimization.
-             */
-            options->indcall2direct = false;
-
-            /* To support clients changing syscall numbers we need to
-             * be able to swap ignored for non-ignored (xref PR 307284)
-             */
-            options->inline_ignored_syscalls = false;
-
-            /* Clients usually want to see all the code, regardless of bugs and
-             * perf issues, so we empty the default native exec list when using
-             * -code_api.  The user can override this behavior by passing their
-             * own -native_exec_list.
-             * However the .pexe section thing on Vista is too dangerous so we
-             * leave that on. */
-            memset(options->native_exec_default_list, 0,
-                   sizeof(options->native_exec_default_list));
-            options->native_exec_managed_code = false;
-
-            /* Don't randomize dynamorio.dll */
-            IF_WINDOWS(options->aslr_dr = false;)
-
-            /* FIXME PR 215179 on getting rid of this tracing restriction. */
-            options->pad_jmps_mark_no_trace = true;
+            options_enable_code_api_dependences(options);
         }
      }, "enable Code Manipulation API", STATIC, OP_PCACHE_NOP)
 
@@ -646,6 +599,13 @@
     /* XXX: make a dynamic option */
     OPTION_INTERNAL(bool, external_dump, "do a core dump using an external debugger (specified in the ONCRASH registry value) when warranted by the dumpcore_mask (kills process on win2k or w/ drwtsn32)")
 #endif
+#if defined(STATIC_LIBRARY) && defined(UNIX)
+    /* i#2119: invoke app handler on DR crash.
+     * If this were off by default it could be a dumpcore bitflag instead.
+     */
+    OPTION_DEFAULT_INTERNAL(bool, invoke_app_on_crash, true,
+                            "On a DR crash, invoke the app fault handler if it exists.")
+#endif
 
     OPTION_DEFAULT(uint, stderr_mask,
                    /* Enable for client linux debug so ASSERTS are visible (PR 232783) */
@@ -682,6 +642,14 @@
     /* PR 304708: we intercept all signals for a better client interface */
     OPTION_DEFAULT(bool, intercept_all_signals, true, "intercept all signals")
 
+    /* i#2080: we have had some problems using sigreturn to set a thread's
+     * context to a given state.  Turning this off will instead use a direct
+     * mechanism that will set only the GPR's and will assume the target stack
+     * is valid and its beyond-TOS slot can be clobbered.  X86-only.
+     */
+    OPTION_DEFAULT_INTERNAL(bool, use_sigreturn_setcontext, true,
+                            "use sigreturn to set a thread's context")
+
     /* i#853: Use our all_memory_areas address space cache when possible.  This
      * avoids expensive reads of /proc/pid/maps, but if the cache becomes stale,
      * we may have incorrect results.
@@ -697,7 +665,7 @@
 
     /* For MacOS, set to 0 to disable the check */
     OPTION_DEFAULT(uint, max_supported_os_version,
-        IF_WINDOWS_ELSE(100, IF_MACOS_ELSE(14, 0)),
+        IF_WINDOWS_ELSE(100, IF_MACOS_ELSE(15, 0)),
         /* case 447, defaults to supporting NT, 2000, XP, 2003, and Vista.
          * Windows 7 added with i#218
          * Windows 8 added with i#565
@@ -724,6 +692,7 @@
         IF_DEBUG_ELSE_0(60)*3*1000, /* disabled in release */
         "timeout (in ms) before assuming a deadlock had occurred (0 to disable)")
 
+    /* stack_size may be adjusted by adjust_defaults_for_page_size(). */
     OPTION_DEFAULT(uint_size, stack_size,
                    /* the CI build has a larger MAX_OPTIONS_STRING so we need
                     * a larger stack even w/ no client present.
@@ -801,7 +770,10 @@
      * with max bb size (even 64 may be too big), xref case 7893. */
     OPTION_DEFAULT(uint, selfmod_max_writes, 5,
         "maximum write instrs per selfmod fragment")
-    OPTION_DEFAULT(uint, max_bb_instrs, 1024,
+    /* If this is too large, clients with heavyweight instrumentation hit the
+     * "exceeded maximum size" failure.
+     */
+    OPTION_DEFAULT(uint, max_bb_instrs, IF_CLIENT_INTERFACE_ELSE(256, 1024),
         "maximum instrs per basic block")
     PC_OPTION_DEFAULT(bool, process_SEH_push,
         IF_RETURN_AFTER_CALL_ELSE(true, false),
@@ -1014,7 +986,8 @@
 
     /* FIXME: case 8023 covers re-enabling on linux */
     OPTION_DEFAULT(uint, protect_mask,
-        IF_WINDOWS_ELSE(0x101 /* SELFPROT_DATA_RARE | SELFPROT_GENCODE */, 0/*NYI*/),
+        IF_STATIC_LIBRARY_ELSE(0,
+            IF_WINDOWS_ELSE(0x101/*SELFPROT_DATA_RARE|SELFPROT_GENCODE*/, 0/*NYI*/)),
         "which memory regions to protect")
     OPTION_INTERNAL(bool, single_privileged_thread, "suspend all other threads when one is out of cache")
 
@@ -1146,13 +1119,34 @@
 
     OPTION_INTERNAL(bool, simulate_contention, "simulate lock contention for testing purposes only")
 
-    OPTION_DEFAULT_INTERNAL(uint_size, initial_heap_unit_size, 32*1024, "initial private heap unit size")
-    OPTION_DEFAULT_INTERNAL(uint_size, initial_global_heap_unit_size, 32*1024, "initial global heap unit size")
+    /* Virtual memory manager.
+     * Our current default allocation unit matches the allocation granularity on
+     * windows, to avoid worrying about external fragmentation
+     * Since most of our allocations fall within this range this makes the
+     * common operation be finding a single empty block.
+     *
+     * On Linux we save a lot of wasted alignment space by using a smaller
+     * granularity (PR 415959).
+     *
+     * FIXME: for Windows, if we reserve the whole region up front and
+     * just commit pieces, why do we need to match the Windows kernel
+     * alloc granularity?
+     *
+     * vmm_block_size may be adjusted by adjust_defaults_for_page_size().
+     */
+    OPTION_DEFAULT(uint_size, vmm_block_size, (IF_WINDOWS_ELSE(64,16)*1024),
+                   "allocation unit for virtual memory manager")
+    /* initial_heap_unit_size may be adjusted by adjust_defaults_for_page_size(). */
+    OPTION_DEFAULT(uint_size, initial_heap_unit_size, 32*1024, "initial private heap unit size")
+    /* initial_global_heap_unit_size may be adjusted by adjust_defaults_for_page_size(). */
+    OPTION_DEFAULT(uint_size, initial_global_heap_unit_size, 32*1024, "initial global heap unit size")
     /* if this is too small then once past the vm reservation we have too many
      * DR areas and subsequent problems with DR areas and allmem synch (i#369)
      */
     OPTION_DEFAULT_INTERNAL(uint_size, max_heap_unit_size, 256*1024, "maximum heap unit size")
+    /* heap_commit_increment may be adjusted by adjust_defaults_for_page_size(). */
     OPTION_DEFAULT(uint_size, heap_commit_increment, 4*1024, "heap commit increment")
+    /* cache_commit_increment may be adjusted by adjust_defaults_for_page_size(). */
     OPTION_DEFAULT(uint, cache_commit_increment, 4*1024, "cache commit increment")
 
     /* cache capacity control
@@ -1607,6 +1601,14 @@
     PC_OPTION_DEFAULT(bool, alt_teb_tls, true,
         "Use other parts of the TEB for TLS once out of real TLS slots")
 #endif /* WINDOWS */
+
+    /* i#2089: whether to use a special safe read of a magic field to determine
+     * whether a thread's TLS is initialized yet, on x86.
+     * XXX: we plan to remove this once we're sure it's stable.
+     */
+    OPTION_DEFAULT_INTERNAL(bool, safe_read_tls_init, true,
+                            "use a safe read to identify uninit TLS")
+
     OPTION_DEFAULT(bool, guard_pages, true, "add guard pages to our heap units")
 
 #ifdef PROGRAM_SHEPHERDING
@@ -1965,14 +1967,14 @@ IF_RCT_IND_BRANCH(options->rct_ind_jump = OPTION_DISABLED;)
 
     OPTION_DEFAULT(bool, track_module_filenames, true,
         "track module file names by watching section creation")
+#endif
 
-    /* FIXME: since we have dynamic options this option can be false for most of the time,
+    /* XXX: since we have dynamic options this option can be false for most of the time,
      * and the gui should set true only when going to detach to prevent a security risk.
      * The setting should be removed when detach is complete.
      * In vault mode: -no_allow_detach -no_dynamic_options
      */
     DYNAMIC_OPTION_DEFAULT(bool, allow_detach, true, "allow detaching from process")
-#endif
 
     /* turn off critical features, right now for experimentation only */
 #ifdef WINDOWS

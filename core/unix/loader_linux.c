@@ -49,6 +49,9 @@
 #endif
 #include "tls.h"
 #include <stddef.h>
+#if defined(X86) && defined(DEBUG)
+# include "os_asm_defines.asm" /* for TLS_APP_SELF_OFFSET_ASM */
+#endif
 
 /****************************************************************************
  * Thread Local Storage
@@ -101,7 +104,10 @@ typedef struct _tls_info_t {
 } tls_info_t;
 static tls_info_t tls_info;
 
-static size_t max_client_tls_size = 2 * PAGE_SIZE;
+/* Maximum size of TLS for client private libraries.
+ * We will round this up to a multiple of the page size.
+ */
+static size_t client_tls_size = 2 * 4096;
 
 /* The actual tcb size is the size of struct pthread from nptl/descr.h, which is
  * a glibc internal header that we can't include.  We hardcode a guess for the
@@ -185,6 +191,12 @@ typedef struct _dr_pthread_t {
  * stored in static TLS space, the loader stores them prior to the thread
  * pointer and lets the app intialize them.  Until we stop using the app's libc
  * (i#46), we need to copy this data from before the thread pointer.
+ *
+ * XXX i#2117: we have seen larger values than 0x400 here.
+ * However, this seems to be used for more than just late injection, and even
+ * for late, blindly increasing it causes some test failures, so it needs
+ * more work.  The comment above should be updated as well, as we do not use
+ * the app's libc inside DR.
  */
 # define APP_LIBC_TLS_SIZE 0x400
 #elif defined(AARCHXX)
@@ -204,6 +216,7 @@ privload_mod_tls_init(privmod_t *mod)
     size_t offset;
     int first_byte;
 
+    IF_X86(ASSERT(TLS_APP_SELF_OFFSET_ASM == offsetof(tcb_head_t, self)));
     ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
     opd = (os_privmod_data_t *) mod->os_privmod_data;
     ASSERT(opd != NULL && opd->tls_block_size != 0);
@@ -244,6 +257,7 @@ privload_mod_tls_init(privmod_t *mod)
 void *
 privload_tls_init(void *app_tp)
 {
+    size_t client_tls_alloc_size = ALIGN_FORWARD(client_tls_size, PAGE_SIZE);
     app_pc dr_tp;
     tcb_head_t *dr_tcb;
     uint i;
@@ -252,8 +266,8 @@ privload_tls_init(void *app_tp)
     /* FIXME: These should be a thread logs, but dcontext is not ready yet. */
     LOG(GLOBAL, LOG_LOADER, 2, "%s: app TLS segment base is "PFX"\n",
         __FUNCTION__, app_tp);
-    dr_tp = heap_mmap(max_client_tls_size);
-    ASSERT(APP_LIBC_TLS_SIZE + TLS_PRE_TCB_SIZE + tcb_size <= max_client_tls_size);
+    dr_tp = heap_mmap(client_tls_alloc_size);
+    ASSERT(APP_LIBC_TLS_SIZE + TLS_PRE_TCB_SIZE + tcb_size <= client_tls_alloc_size);
 #ifdef AARCHXX
     /* GDB reads some pthread members (e.g., pid, tid), so we must make sure
      * the size and member locations match to avoid gdb crash.
@@ -262,8 +276,8 @@ privload_tls_init(void *app_tp)
     ASSERT(LIBC_PTHREAD_TID_OFFSET == offsetof(dr_pthread_t, tid));
 #endif
     LOG(GLOBAL, LOG_LOADER, 2, "%s: allocated %d at "PFX"\n",
-        __FUNCTION__, max_client_tls_size, dr_tp);
-    dr_tp = dr_tp + max_client_tls_size - tcb_size;
+        __FUNCTION__, client_tls_alloc_size, dr_tp);
+    dr_tp = dr_tp + client_tls_alloc_size - tcb_size;
     dr_tcb = (tcb_head_t *) dr_tp;
     LOG(GLOBAL, LOG_LOADER, 2, "%s: adjust thread pointer to "PFX"\n",
         __FUNCTION__, dr_tp);
@@ -296,7 +310,7 @@ privload_tls_init(void *app_tp)
      * + our over-estimate crosses a page boundary (our estimate is for latest
      * libc and is larger than on older libc versions): i#855.
      */
-    ASSERT(tls_info.offset <= max_client_tls_size - TLS_PRE_TCB_SIZE - tcb_size);
+    ASSERT(tls_info.offset <= client_tls_alloc_size - TLS_PRE_TCB_SIZE - tcb_size);
 #ifdef X86
     /* Update two self pointers. */
     dr_tcb->tcb  = dr_tcb;
@@ -329,10 +343,11 @@ privload_tls_init(void *app_tp)
 void
 privload_tls_exit(void *dr_tp)
 {
+    size_t client_tls_alloc_size = ALIGN_FORWARD(client_tls_size, PAGE_SIZE);
     if (dr_tp == NULL)
         return;
-    dr_tp = dr_tp + tcb_size - max_client_tls_size;
-    heap_munmap(dr_tp, max_client_tls_size);
+    dr_tp = dr_tp + tcb_size - client_tls_alloc_size;
+    heap_munmap(dr_tp, client_tls_alloc_size);
 }
 
 /****************************************************************************

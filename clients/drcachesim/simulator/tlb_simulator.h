@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2015 Google, Inc.  All rights reserved.
+ * Copyright (c) 2015-2016 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -40,15 +40,14 @@
 #include "simulator.h"
 #include "tlb_stats.h"
 #include "tlb.h"
-#include "ipc_reader.h"
 
 class tlb_simulator_t : public simulator_t
 {
  public:
-    virtual bool init();
+    tlb_simulator_t();
     virtual ~tlb_simulator_t();
-    virtual bool run();
-    virtual bool print_stats();
+    virtual bool process_memref(const memref_t &memref);
+    virtual bool print_results();
 
  protected:
     // Create a tlb_t object with a specific replacement policy.

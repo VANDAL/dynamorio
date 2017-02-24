@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2013-2016 Google, Inc.  All rights reserved.
+ * Copyright (c) 2013-2017 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -203,10 +203,10 @@ static file_t set_log = INVALID_FILE;
  * Utility Functions
  */
 
-static inline char *
-move_to_next_line(char *ptr)
+static inline const char *
+move_to_next_line(const char *ptr)
 {
-    char *end = strchr(ptr, '\n');
+    const char *end = strchr(ptr, '\n');
     if (end == NULL) {
         ptr += strlen(ptr);
     } else {
@@ -244,7 +244,7 @@ null_terminate_path(char *path)
 
 #define LINE_HASH_TABLE_BITS   10
 #define LINE_TABLE_INIT_SIZE 1024 /* first chunk holds 1024 lines */
-#define LINE_TABLE_INIT_PRINT_BUF_SIZE (4*PAGE_SIZE)
+#define LINE_TABLE_INIT_PRINT_BUF_SIZE (16*1024)
 #define SOURCE_FILE_START_LINE_SIZE (MAXIMUM_PATH + 10) /* "SF:%s\n" */
 #define SOURCE_FILE_END_LINE_SIZE   20 /* "end_of_record\n" */
 #define MAX_CHAR_PER_LINE 256 /* large enough to hold the test function name */
@@ -714,7 +714,7 @@ static module_table_t *
 module_table_create(const char *module, size_t size)
 {
     module_table_t *table;
-    ASSERT(ALIGNED(size, PAGE_SIZE), "Module size is not aligned");
+    ASSERT(ALIGNED(size, dr_page_size()), "Module size is not aligned");
 
     table = (module_table_t *) calloc(1, sizeof(*table));
     ASSERT(table != NULL, "Failed to allocate module table");
@@ -749,70 +749,63 @@ module_is_from_tool(const char * path)
             strstr(path, DRMEM_LIB_NAME) != NULL);
 }
 
-static char *
-read_module_list(char *buf, module_table_t ***tables, uint *num_mods)
+static const char *
+read_module_list(const char *buf, module_table_t ***tables, uint *num_mods)
 {
-    char path[MAXIMUM_PATH];
     const char *modpath;
     char subst[MAXIMUM_PATH];
     uint i;
+    void *handle;
 
     PRINT(3, "Reading module table...\n");
     /* module table header */
-    PRINT(4, "Reading Module Table Header\n");
-    if (dr_sscanf(buf, "Module Table: %d\n", num_mods) != 1) {
+    if (drmodtrack_offline_read(INVALID_FILE, &buf, &handle, num_mods) !=
+        DRCOVLIB_SUCCESS) {
         WARN(2, "Failed to read module table");
         return NULL;
     }
-    buf = move_to_next_line(buf);
 
-    /* module lists */
-    PRINT(4, "Reading Module Lists\n");
     *tables = (module_table_t **) calloc(*num_mods, sizeof(*tables));
     for (i = 0; i < *num_mods; i++) {
-        uint   mod_id;
-        uint64 mod_size;
         module_table_t *mod_table;
+        drmodtrack_info_t info = {sizeof(info),};
 
-        /* assuming the string is something like:  "0, 2207744, /bin/ls" */
-        /* XXX: i#1143: we do not use dr_sscanf since it does not support %[] */
-        if (sscanf(buf, " %u, %" INT64_FORMAT"u, %[^\n\r]", &mod_id, &mod_size, path) != 3)
+        if (drmodtrack_offline_lookup(handle, i, &info) != DRCOVLIB_SUCCESS)
             ASSERT(false, "Failed to read module table");
-        buf = move_to_next_line(buf);
-        PRINT(5, "Module: %u, " PFX", %s\n", mod_id, (ptr_uint_t)mod_size, path);
-        mod_table = (module_table_t *) hashtable_lookup(&module_htable, path);
+        PRINT(5, "Module: %u, " PFX", %s\n", i, (ptr_uint_t)info.size, info.path);
+        mod_table = (module_table_t *)hashtable_lookup(&module_htable, (void*)info.path);
         if (mod_table == NULL) {
-            modpath = path;
-            if (mod_size >= UINT_MAX)
+            modpath = info.path;
+            if (info.size >= UINT_MAX)
                 ASSERT(false, "module size is too large");
             /* FIXME i#1445: we have seen the pdb convert paths to all-lowercase,
              * so these should be case-insensitive on Windows.
              */
-            if (strstr(path, "<unknown>") != NULL ||
+            if (strstr(info.path, "<unknown>") != NULL ||
                 (op_mod_filter.specified() &&
-                 strstr(path, op_mod_filter.get_value().c_str()) == NULL) ||
+                 strstr(info.path, op_mod_filter.get_value().c_str()) == NULL) ||
                 (op_mod_skip_filter.specified() &&
-                 strstr(path, op_mod_skip_filter.get_value().c_str()) != NULL) ||
-                (!op_include_tool.get_value() && module_is_from_tool(path)))
+                 strstr(info.path, op_mod_skip_filter.get_value().c_str()) != NULL) ||
+                (!op_include_tool.get_value() && module_is_from_tool(info.path)))
                 mod_table = (module_table_t *) MODULE_TABLE_IGNORE;
             else {
                 if (op_pathmap.specified()) {
                     const char *tofind = op_pathmap.get_value().first.c_str();
-                    const char *match = strstr(path, tofind);
+                    const char *match = strstr(info.path, tofind);
                     if (match != NULL) {
                         if (dr_snprintf(subst, BUFFER_SIZE_ELEMENTS(subst),
-                                        "%.*s%s%s", match - path, path,
+                                        "%.*s%s%s", match - info.path, info.path,
                                         op_pathmap.get_value().second.c_str(),
                                         match + strlen(tofind)) <= 0) {
-                            WARN(1, "Failed to replace %s in %s\n", tofind, path);
+                            WARN(1, "Failed to replace %s in %s\n", tofind, info.path);
                         } else {
                             NULL_TERMINATE_BUFFER(subst);
-                            PRINT(2, "Substituting |%s| for |%s|\n", subst, path);
+                            PRINT(2, "Substituting |%s| for |%s|\n", subst, info.path);
                             modpath = subst;
                         }
                     }
                 }
-                mod_table = module_table_create(modpath, (size_t)mod_size);
+                mod_table = module_table_create(modpath, info.size);
             }
             PRINT(4, "Create module table " PFX" for module %s\n",
                   (ptr_uint_t)mod_table, modpath);
@@ -822,11 +815,13 @@ read_module_list(char *buf, module_table_t ***tables, uint *num_mods)
         }
         (*tables)[i] = mod_table;
     }
+    if (drmodtrack_offline_exit(handle) != DRCOVLIB_SUCCESS)
+        ASSERT(false, "failed to clean up module table data");
     return buf;
 }
 
 static bool
-read_bb_list(char *buf, module_table_t **tables, uint num_mods, uint num_bbs)
+read_bb_list(const char *buf, module_table_t **tables, uint num_mods, uint num_bbs)
 {
     uint i;
     bb_entry_t *entry;
@@ -850,8 +845,8 @@ read_bb_list(char *buf, module_table_t **tables, uint num_mods, uint num_bbs)
     return add_new_bb;
 }
 
-static char *
-read_file_header(char *buf)
+static const char *
+read_file_header(const char *buf)
 {
     char  str[MAXIMUM_PATH];
     uint  version;
@@ -877,8 +872,7 @@ read_file_header(char *buf)
 
     /* flavor */
     PRINT(4, "Reading flavor\n");
-    /* XXX i#1143: switch to dr_sscanf once it supports %[] */
-    if (sscanf(buf, "DRCOV FLAVOR: %[^\n\r]\n", str) != 1) {
+    if (dr_sscanf(buf, "DRCOV FLAVOR: %[^\n\r]\n", str) != 1) {
         WARN(2, "Failed to read version number");
         return NULL;
     }
@@ -892,7 +886,7 @@ read_file_header(char *buf)
 }
 
 static file_t
-open_input_file(const char *fname, char **map_out OUT,
+open_input_file(const char *fname, const char **map_out OUT,
                 size_t *map_size OUT, uint64 *file_sz OUT)
 {
     uint64 file_size;
@@ -929,17 +923,17 @@ open_input_file(const char *fname, char **map_out OUT,
 }
 
 static void
-close_input_file(file_t f, char *map, size_t map_size)
+close_input_file(file_t f, const char *map, size_t map_size)
 {
-    dr_unmap_file(map, map_size);
+    dr_unmap_file((char *)map, map_size);
     dr_close_file(f);
 }
 
 static bool
-read_drcov_file(char *input)
+read_drcov_file(const char *input)
 {
     file_t log;
-    char  *map, *ptr;
+    const char  *map, *ptr;
     size_t map_size;
     module_table_t **tables;
     uint   num_mods, num_bbs;
@@ -1073,7 +1067,7 @@ static bool
 read_drcov_list(void)
 {
     file_t list;
-    char  *map, *ptr;
+    const char  *map, *ptr;
     char   path[MAXIMUM_PATH];
     size_t map_size;
     uint64 file_size;

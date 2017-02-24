@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2013-2016 Google, Inc.   All rights reserved.
+ * Copyright (c) 2013-2017 Google, Inc.   All rights reserved.
  * **********************************************************/
 
 /*
@@ -50,6 +50,7 @@ finalized.
 
  - \ref sec_drreg_setup
  - \ref sec_drreg_usage
+ - \ref sec_drreg_app_values
  - \ref sec_drreg_linear
 
 \section sec_drreg_setup Setup
@@ -63,9 +64,10 @@ That will automatically set up the include path and library dependence.
 
 The initialization routine \p drreg_init() must be called prior to any of
 the other routines.  Additional calls to drreg_init() are allowed (so long
-as they are paired with corresponding calls to drreg_exit()) but only the
-first caller's options are honored.  Typically this is the end-user tool
-itself, with most other library components not directly interacting with
+as they are paired with corresponding calls to drreg_exit()).  The option
+fields are combined from multiple calls as described in the documentation
+for each field.  Typically the end-user tool itself specifies these
+options, with most other library components not directly interacting with
 drreg (libraries often take in scratch registers from the caller for most
 of their operations).
 
@@ -81,6 +83,22 @@ application instruction reads or writes that register, while still
 preserving the client's value in that register for use after the
 application instruction.  Reservations may not extend beyond the end of a
 basic block.
+
+\section sec_drreg_app_values Application Values
+
+\p drreg assumes that only application instructions need to read
+application values.  \p drreg assumes that it is safe to wait as long as
+possible to restore a spilled application value that is no longer reserved.
+If a client is inserting instrumentation that reads application values, or
+is using a library routine that does the same, the client needs to tell \p
+drreg to restore the needed application registers.  This can be done with
+drreg_restore_app_values() or with drreg_get_app_value().  This essentially
+acts as a "barrier" to lazy restoring.  Library routines that require such
+a barrier include anything that reads application instruction operands,
+including dr_insert_mbr_instrumentation(),
+dr_insert_call_instrumentation(), etc.  They can also include
+dr_insert_clean_call() if not enough TLS slots were requested and as a
+consequence drreg and DR itself are sharing slots.
 
 \section sec_drreg_linear Linear Control Flow
 

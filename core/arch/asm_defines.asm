@@ -284,7 +284,10 @@ ASSUME fs:_DATA @N@\
 #  define REG_XBP rbp
 #  define REG_XSP rsp
 /* skip [r8..r15], only available on AMD64 */
-#  define SEG_TLS gs /* keep in sync w/ {linux,win32}/os_exports.h defines */
+#  define SEG_TLS gs /* keep in sync w/ {unix,win32}/os_exports.h defines */
+#  ifdef UNIX
+#   define LIB_SEG_TLS fs /* keep in sync w/ unix/os_exports.h defines */
+#  endif
 # else /* 32-bit */
 #  define REG_XAX eax
 #  define REG_XBX ebx
@@ -294,7 +297,10 @@ ASSUME fs:_DATA @N@\
 #  define REG_XDI edi
 #  define REG_XBP ebp
 #  define REG_XSP esp
-#  define SEG_TLS fs /* keep in sync w/ {linux,win32}/os_exports.h defines */
+#  define SEG_TLS fs /* keep in sync w/ {unix,win32}/os_exports.h defines */
+#  ifdef UNIX
+#   define LIB_SEG_TLS gs /* keep in sync w/ unix/os_exports.h defines */
+#  endif
 # endif /* 64/32-bit */
 #endif /* ARM/X86 */
 
@@ -360,14 +366,23 @@ ASSUME fs:_DATA @N@\
 # define ARG9_NORETADDR  ARG9
 # define ARG10_NORETADDR ARG10
 
+/* The macros SAVE_PRESERVED_REGS and RESTORE_PRESERVED_REGS save and restore the link
+ * register and REG_PRESERVED_* so must be updated if more REG_PRESERVED_ regs are added.
+ */
 # ifndef AARCH64
 #  define FP r11
+#  define LR r14
 #  define INDJMP bx
 #  define REG_PRESERVED_1 r4
+#  define SAVE_PRESERVED_REGS    push {REG_PRESERVED_1, LR}
+#  define RESTORE_PRESERVED_REGS pop  {REG_PRESERVED_1, LR}
 # else
 #  define FP x29
+#  define LR x30
 #  define INDJMP br
 #  define REG_PRESERVED_1 x19
+#  define SAVE_PRESERVED_REGS    stp REG_PRESERVED_1, LR, [sp, #-16]!
+#  define RESTORE_PRESERVED_REGS ldp REG_PRESERVED_1, LR, [sp], #16
 # endif
 
 #else /* Intel X86 */
@@ -689,6 +704,11 @@ ASSUME fs:_DATA @N@\
 #  define RETURN  ret
 # else
 #  define RETURN  bx lr
+# endif
+# ifdef X64
+#  define MOV16   mov
+# else
+#  define MOV16   movw
 # endif
 # define INC(reg) add reg, reg, POUND 1
 # define DEC(reg) sub reg, reg, POUND 1

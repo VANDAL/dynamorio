@@ -1,5 +1,5 @@
 /* ******************************************************************************
- * Copyright (c) 2010-2016 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2017 Google, Inc.  All rights reserved.
  * Copyright (c) 2010-2011 Massachusetts Institute of Technology  All rights reserved.
  * Copyright (c) 2002-2010 VMware, Inc.  All rights reserved.
  * ******************************************************************************/
@@ -459,7 +459,7 @@ remove_callback(callback_list_t *vec, void (*func)(void), bool unprotect)
  * and since this routine assumes .data is writable.
  */
 static void
-add_client_lib(char *path, char *id_str, char *options)
+add_client_lib(const char *path, const char *id_str, const char *options)
 {
     client_id_t id;
     shlib_handle_t client_lib;
@@ -562,7 +562,7 @@ add_client_lib(char *path, char *id_str, char *options)
 void
 instrument_load_client_libs(void)
 {
-    if (!IS_INTERNAL_STRING_OPTION_EMPTY(client_lib)) {
+    if (CLIENTS_EXIST()) {
         char buf[MAX_LIST_OPTION_LENGTH];
         char *path;
 
@@ -596,6 +596,16 @@ instrument_load_client_libs(void)
                 }
             }
 
+#ifdef STATIC_LIBRARY
+            /* We ignore client library paths and allow client code anywhere in the app.
+             * We have a check in load_shared_library() to avoid loading
+             * a 2nd copy of the app.
+             * We do support passing client ID and options via the first -client_lib.
+             */
+            add_client_lib(get_application_name(), id == NULL ? "0" : id,
+                           options == NULL ? "" : options);
+            break;
+#endif
             add_client_lib(path, id, options);
             path = next_path;
         } while (path != NULL);
@@ -654,15 +664,22 @@ instrument_init(void)
                            &client_libs[i].argc, &client_libs[i].argv,
                            MAX_OPTION_LENGTH);
 
+#ifdef STATIC_LIBRARY
+        /* We support the app having client code anywhere, so there does not
+         * have to be an init routine that we call.  This means the app
+         * may have to iterate modules on its own.
+         */
+#else
         /* Since the user has to register all other events, it
          * doesn't make sense to provide the -client_lib
          * option for a module that doesn't export an init routine.
          */
         CLIENT_ASSERT(init != NULL || legacy != NULL,
                       "client does not export a dr_client_main or dr_init routine");
+#endif
         if (init != NULL)
             (*init)(client_libs[i].id, client_libs[i].argc, client_libs[i].argv);
-        else
+        else if (legacy != NULL)
             (*legacy)(client_libs[i].id);
     }
 
@@ -781,6 +798,7 @@ instrument_exit(void)
 
     vmvector_delete_vector(GLOBAL_DCONTEXT, client_aux_libs);
     client_aux_libs = NULL;
+    num_client_libs = 0;
 #ifdef WINDOWS
     DELETE_LOCK(client_aux_lib64_lock);
 #endif
@@ -1901,7 +1919,7 @@ dr_module_contains_addr(const module_data_t *data, app_pc addr)
 void
 instrument_module_load_trigger(app_pc pc)
 {
-    if (!IS_STRING_OPTION_EMPTY(client_lib)) {
+    if (CLIENTS_EXIST()) {
         module_area_t *ma;
         module_data_t *client_data = NULL;
         os_get_module_info_lock();
@@ -2594,6 +2612,7 @@ dr_get_os_version(dr_os_version_info_t *info)
     get_os_version_ex(&ver, &sp_major, &sp_minor);
     if (info->size > offsetof(dr_os_version_info_t, version)) {
         switch (ver) {
+        case WINDOWS_VERSION_10_1607: info->version = DR_WINDOWS_VERSION_10_1607; break;
         case WINDOWS_VERSION_10_1511: info->version = DR_WINDOWS_VERSION_10_1511; break;
         case WINDOWS_VERSION_10:    info->version = DR_WINDOWS_VERSION_10;    break;
         case WINDOWS_VERSION_8_1:   info->version = DR_WINDOWS_VERSION_8_1;   break;
@@ -2645,6 +2664,13 @@ uint64
 dr_get_milliseconds(void)
 {
     return query_time_millis();
+}
+
+DR_API
+uint64
+dr_get_microseconds(void)
+{
+    return query_time_micros();
 }
 
 DR_API
@@ -2810,6 +2836,7 @@ raw_mem_free(void *addr, size_t size, dr_alloc_flags_t flags)
     uint os_flags = TEST(DR_ALLOC_RESERVE_ONLY, flags) ? RAW_ALLOC_RESERVE_ONLY :
         (TEST(DR_ALLOC_COMMIT_ONLY, flags) ? RAW_ALLOC_COMMIT_ONLY : 0);
 #endif
+    size = ALIGN_FORWARD(size, PAGE_SIZE);
     if (TEST(DR_ALLOC_NON_DR, flags)) {
         /* use lock to avoid racy update on parallel memory allocation,
          * e.g. allocation from another thread at p happens after os_heap_free
@@ -3040,6 +3067,13 @@ dr_memory_protect(void *base, size_t size, uint new_prot)
         CLIENT_ASSERT(mod_prot == new_prot, "internal error on dr_memory_protect()");
     }
     return set_protection(base, size, new_prot);
+}
+
+DR_API
+size_t
+dr_page_size(void)
+{
+    return os_page_size();
 }
 
 DR_API
@@ -3562,6 +3596,50 @@ dr_recurlock_mark_as_app(void *reclock)
 }
 
 DR_API
+void *
+dr_event_create(void)
+{
+    return (void *)create_event();
+}
+
+DR_API
+bool
+dr_event_destroy(void *event)
+{
+    destroy_event((event_t)event);
+    return true;
+}
+
+DR_API
+bool
+dr_event_wait(void *event)
+{
+    dcontext_t *dcontext = get_thread_private_dcontext();
+    if (IS_CLIENT_THREAD(dcontext))
+        dcontext->client_data->client_thread_safe_for_synch = true;
+    wait_for_event((event_t)event);
+    if (IS_CLIENT_THREAD(dcontext))
+        dcontext->client_data->client_thread_safe_for_synch = false;
+    return true;
+}
+
+DR_API
+bool
+dr_event_signal(void *event)
+{
+    signal_event((event_t)event);
+    return true;
+}
+
+DR_API
+bool
+dr_event_reset(void *event)
+{
+    reset_event((event_t)event);
+    return true;
+}
+
+DR_API
 bool
 dr_mark_safe_to_suspend(void *drcontext, bool enter)
 {
@@ -3837,6 +3915,29 @@ dr_get_proc_address_ex(module_handle_t lib, const char *name,
     info->address = get_proc_address_ex(lib, name, &info->is_indirect_code);
 #endif
     return (info->address != NULL);
+}
+
+byte *
+dr_map_executable_file(const char *filename, dr_map_executable_flags_t flags,
+                       size_t *size OUT)
+{
+#ifdef MACOS
+    /* XXX i#1285: implement private loader on Mac */
+    return NULL;
+#else
+    modload_flags_t mflags = MODLOAD_NOT_PRIVLIB;
+    if (TEST(DR_MAPEXE_SKIP_WRITABLE, flags))
+        mflags |= MODLOAD_SKIP_WRITABLE;
+    if (filename == NULL)
+        return NULL;
+    return privload_map_and_relocate(filename, size, mflags);
+#endif
+}
+
+bool
+dr_unmap_executable_file(byte *base, size_t size)
+{
+    return unmap_file(base, size);
 }
 
 DR_API
@@ -4544,6 +4645,8 @@ dr_raw_tls_calloc(OUT reg_id_t *tls_register,
     CLIENT_ASSERT(offset != NULL,
                   "dr_raw_tls_calloc: offset cannot be NULL");
     *tls_register = IF_X86_ELSE(SEG_TLS, dr_reg_stolen);
+    if (num_slots == 0)
+        return true;
     return os_tls_calloc(offset, num_slots, alignment);
 }
 
@@ -4551,6 +4654,8 @@ DR_API
 bool
 dr_raw_tls_cfree(uint offset, uint num_slots)
 {
+    if (num_slots == 0)
+        return true;
     return os_tls_cfree(offset, num_slots);
 }
 
@@ -5075,7 +5180,9 @@ dr_insert_clean_call_ex_varg(void *drcontext, instrlist_t *ilist, instr_t *where
     LOG(THREAD, LOG_CLEANCALL, 2, "CLEANCALL: insert clean call to "PFX"\n", callee);
     /* analyze the clean call, return true if clean call can be inlined. */
     if (analyze_clean_call(dcontext, &cci, where, callee,
-                           save_fpstate, num_args, args)) {
+                           save_fpstate, TEST(DR_CLEANCALL_ALWAYS_OUT_OF_LINE, save_flags),
+                           num_args, args) &&
+        !TEST(DR_CLEANCALL_ALWAYS_OUT_OF_LINE, save_flags)) {
 #ifdef CLIENT_INTERFACE
         /* we can perform the inline optimization and return. */
         STATS_INC(cleancall_inlined);
@@ -5090,9 +5197,9 @@ dr_insert_clean_call_ex_varg(void *drcontext, instrlist_t *ilist, instr_t *where
     if (TEST(DR_CLEANCALL_NOSAVE_FLAGS, save_flags)) {
         /* even if we remove flag saves we want to keep mcontext shape */
         cci.preserve_mcontext = true;
-        cci.skip_save_aflags = true;
+        cci.skip_save_flags = true;
         /* we assume this implies DF should be 0 already */
-        cci.skip_clear_eflags = true;
+        cci.skip_clear_flags = true;
         /* XXX: should also provide DR_CLEANCALL_NOSAVE_NONAFLAGS to
          * preserve just arith flags on return from a call
          */
@@ -5105,13 +5212,13 @@ dr_insert_clean_call_ex_varg(void *drcontext, instrlist_t *ilist, instr_t *where
         cci.preserve_mcontext = true;
         /* start w/ all */
 #if defined(X64) && defined(WINDOWS)
-        cci.num_xmms_skip = 6;
+        cci.num_simd_skip = 6;
 #else
         /* all 8 (or 16) are scratch */
-        cci.num_xmms_skip = NUM_XMM_REGS;
+        cci.num_simd_skip = NUM_SIMD_REGS;
 #endif
-        for (i=0; i<cci.num_xmms_skip; i++)
-            cci.xmm_skip[i] = true;
+        for (i=0; i<cci.num_simd_skip; i++)
+            cci.simd_skip[i] = true;
         /* now remove those used for param/retval */
 #ifdef X64
         if (TEST(DR_CLEANCALL_NOSAVE_XMM_NONPARAM, save_flags)) {
@@ -5121,16 +5228,16 @@ dr_insert_clean_call_ex_varg(void *drcontext, instrlist_t *ilist, instr_t *where
 # else
             for (i=0; i<3; i++)
 # endif
-                cci.xmm_skip[i] = false;
-            cci.num_xmms_skip -= i;
+                cci.simd_skip[i] = false;
+            cci.num_simd_skip -= i;
         }
         if (TEST(DR_CLEANCALL_NOSAVE_XMM_NONRET, save_flags)) {
             /* xmm0 (and xmm1 for linux) are used for retvals */
-            cci.xmm_skip[0] = false;
-            cci.num_xmms_skip--;
+            cci.simd_skip[0] = false;
+            cci.num_simd_skip--;
 # ifdef UNIX
-            cci.xmm_skip[1] = false;
-            cci.num_xmms_skip--;
+            cci.simd_skip[1] = false;
+            cci.num_simd_skip--;
 # endif
         }
 #endif
@@ -6428,6 +6535,11 @@ dr_delete_fragment(void *drcontext, void *tag)
     CLIENT_ASSERT(!SHARED_FRAGMENTS_ENABLED(),
                   "dr_delete_fragment() only valid with -thread_private");
     CLIENT_ASSERT(drcontext != NULL, "dr_delete_fragment(): drcontext cannot be NULL");
+    /* i#1989: there's no easy way to get a translation without a proper dcontext */
+    CLIENT_ASSERT(!fragment_thread_exited(dcontext),
+                  "dr_delete_fragment not supported from the thread exit event");
+    if (fragment_thread_exited(dcontext))
+        return false;
     waslinking = is_couldbelinking(dcontext);
     if (!waslinking)
         enter_couldbelinking(dcontext, NULL, false);
@@ -6497,6 +6609,11 @@ dr_replace_fragment(void *drcontext, void *tag, instrlist_t *ilist)
     CLIENT_ASSERT(drcontext != NULL, "dr_replace_fragment(): drcontext cannot be NULL");
     CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT,
                   "dr_replace_fragment: drcontext is invalid");
+    /* i#1989: there's no easy way to get a translation without a proper dcontext */
+    CLIENT_ASSERT(!fragment_thread_exited(dcontext),
+                  "dr_replace_fragment not supported from the thread exit event");
+    if (fragment_thread_exited(dcontext))
+        return false;
     waslinking = is_couldbelinking(dcontext);
     if (!waslinking)
         enter_couldbelinking(dcontext, NULL, false);
@@ -6838,6 +6955,11 @@ dr_app_pc_from_cache_pc(byte *cache_pc)
     bool waslinking;
     CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     ASSERT(dcontext != NULL);
+    /* i#1989: there's no easy way to get a translation without a proper dcontext */
+    CLIENT_ASSERT(!fragment_thread_exited(dcontext),
+                  "dr_app_pc_from_cache_pc not supported from the thread exit event");
+    if (fragment_thread_exited(dcontext))
+        return NULL;
     waslinking = is_couldbelinking(dcontext);
     if (!waslinking)
         enter_couldbelinking(dcontext, NULL, false);

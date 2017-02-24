@@ -86,9 +86,9 @@ GLOBAL_LABEL(cpuid_supported:)
         bx       lr
         END_FUNC(cpuid_supported)
 
-/* void call_switch_stack(dcontext_t *dcontext,       // REG_R0
+/* void call_switch_stack(void *func_arg,             // REG_R0
  *                        byte *stack,                // REG_R1
- *                        void (*func)(dcontext_t *), // REG_R2
+ *                        void (*func)(void *arg),    // REG_R2
  *                        void *mutex_to_free,        // REG_R3
  *                        bool return_on_return)      // [REG_SP]
  */
@@ -574,6 +574,10 @@ GLOBAL_LABEL(dynamorio_sys_exit:)
 #endif
         DECLARE_FUNC(master_signal_handler)
 GLOBAL_LABEL(master_signal_handler:)
+        mov      ARG4, sp /* pass as extra arg */
+        /* i#2107: we repeat the mov to work around odd behavior on Android
+         * where sometimes the kernel sends control to the 2nd instruction here.
+         */
         mov      ARG4, sp /* pass as extra arg */
         b        GLOBAL_REF(master_signal_handler_C)
         /* master_signal_handler_C will do the ret */

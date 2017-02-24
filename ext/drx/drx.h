@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2013-2015 Google, Inc.   All rights reserved.
+ * Copyright (c) 2013-2017 Google, Inc.   All rights reserved.
  * **********************************************************/
 
 /*
@@ -154,8 +154,6 @@ DR_EXPORT
  * same \p where instruction and no other instructions should be inserted in
  * between. In that case, \p drx will try to merge the instrumentation for
  * better performance.
- *
- * \note May be called without calling drx_init().
  */
 bool
 drx_insert_counter_update(void *drcontext, instrlist_t *ilist, instr_t *where,
@@ -221,16 +219,30 @@ drx_register_soft_kills(bool (*event_cb)(process_id_t pid, int exit_code));
  * LOGGING
  */
 
+/**
+ * Flag for use with drx_open_unique_file() or drx_open_unique_appid_file()
+ * in \p extra_flags to skip the file open and get the path string only.
+ *
+ * \note This flag value must not conflict with any DR_FILE_* flag value
+ * used by dr_open_file().
+ */
+#define DRX_FILE_SKIP_OPEN  0x8000
+
 DR_EXPORT
 /**
  * Opens a new file with a name constructed from "dir/prefix.xxxx.suffix",
  * where xxxx is a 4-digit number incremented until a unique name is found
  * that does not collide with any existing file.
  *
- * Passes \p extra_flags through to the dr_open_file() call.
+ * Passes \p extra_flags through to the dr_open_file() call if \p extra_flags
+ * is not DRX_FILE_SKIP_OPEN.
  *
  * On success, returns the file handle and optionally the resulting path
  * in \p result.  On failure, returns INVALID_FILE.
+ *
+ * Skips dr_open_file() if \p extra_flags is DRX_FILE_SKIP_OPEN.
+ * Returns INVALID_FILE and optionally the resulting path in \p result.
+ * Unique name is not guaranteed and xxxx is set randomly.
  *
  * \note May be called without calling drx_init().
  */
@@ -246,10 +258,15 @@ DR_EXPORT
  * from dr_get_application_name().  The id portion of the string is from \p id,
  * which is meant to be either the process id or the thread id.
  *
- * Passes \p extra_flags through to the dr_open_file() call.
+ * Passes \p extra_flags through to the dr_open_file() call if \p extra_flags
+ * is not DRX_FILE_SKIP_OPEN.
  *
  * On success, returns the file handle and optionally the resulting path
  * in \p result.  On failure, returns INVALID_FILE.
+ *
+ * Skips dr_open_file() if \p extra_flags is DRX_FILE_SKIP_OPEN.
+ * Returns INVALID_FILE and optionally the resulting path in \p result.
+ * Unique name is not guaranteed and xxxx is set randomly.
  *
  * \note May be called without calling drx_init().
  */
@@ -257,6 +274,25 @@ file_t
 drx_open_unique_appid_file(const char *dir, ptr_int_t id,
                            const char *prefix, const char *suffix,
                            uint extra_flags, char *result OUT, size_t result_len);
+
+DR_EXPORT
+/**
+ * Creates a new directory with a name constructed from
+ * "dir/prefix.appname.id.xxxx.suffix",
+ * where xxxx is a 4-digit number incremented until a unique name is found
+ * that does not collide with any existing file.  The appname string comes
+ * from dr_get_application_name().  The id portion of the string is from \p id,
+ * which is meant to be either the process id or the thread id.
+ *
+ * Returns whether successful.
+ * On success, optionally returns the resulting path in \p result.
+ *
+ * \note May be called without calling drx_init().
+ */
+bool
+drx_open_unique_appid_dir(const char *dir, ptr_int_t id,
+                          const char *prefix, const char *suffix,
+                          char *result OUT, size_t result_len);
 
 /***************************************************************************
  * BUFFER FILLING LIBRARY
@@ -398,6 +434,31 @@ DR_EXPORT
 /** Retrieves the capacity of the buffer. */
 size_t
 drx_buf_get_buffer_size(void *drcontext, drx_buf_t *buf);
+
+DR_EXPORT
+/**
+ * Pads a basic block with a label at the end for routines which rely on inserting
+ * instrumentation after every instruction. Note that users of this routine must act on
+ * the previous instruction in basic block events before skipping non-app instructions
+ * because the label is not marked as an app instruction.
+ *
+ * \note the padding label is not introduced if the basic block is already branch
+ * terminated.
+ *
+ * \returns whether padding was introduced.
+ */
+bool
+drx_tail_pad_block(void *drcontext, instrlist_t *ilist);
+
+DR_EXPORT
+/**
+ * Constructs a memcpy-like operation that is compatible with drx_buf.
+ *
+ * \note drx_buf_insert_buf_memcpy() will increment the buffer pointer internally.
+ */
+void
+drx_buf_insert_buf_memcpy(void *drcontext, drx_buf_t *buf, instrlist_t *ilist,
+                          instr_t *where, reg_id_t dst, reg_id_t src, ushort len);
 
 /*@}*/ /* end doxygen group */
 

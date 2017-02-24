@@ -184,9 +184,9 @@ $arch = (defined($defines{"AARCH64"}) ? "aarch64" :
      "$core/globals.h",
      "$core/arch/arch_exports.h", # encode routines
      "$core/arch/proc.h",
-     "$core/os_shared.h",        # before instrument.h
-     "$core/module_shared.h",    # before instrument.h
-     "$core/lib/instrument.h",
+     "$core/os_shared.h",        # before instrument_api.h
+     "$core/module_shared.h",    # before instrument_api.h
+     "$core/lib/instrument_api.h",
      "$core/arch/x86/opcode.h",
      "$core/arch/aarch64/opcode.h",
      "$core/arch/arm/opcode.h",
@@ -267,7 +267,8 @@ sub keep_define($)
             $def eq "X86" || $def eq "AARCH64" || $def eq "AARCHXX" || $def eq "ARM" ||
             $def eq "X86_32" || $def eq "X86_64" ||
             $def eq "ANDROID" || $def eq "USE_VISIBILITY_ATTRIBUTES" ||
-            $def eq "DR_FAST_IR" || $def eq "__cplusplus" || $def eq "PAGE_SIZE");
+            $def eq "DR_FAST_IR" || $def eq "__cplusplus" || $def eq "PAGE_SIZE" ||
+            $def eq "DR_PAGE_SIZE_COMPATIBILITY");
 }
 
 foreach $file (@headers) {

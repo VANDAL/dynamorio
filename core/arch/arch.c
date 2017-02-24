@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2016 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2017 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -106,6 +106,10 @@ reg_spill_tls_offs(reg_id_t reg)
     case SCRATCH_REG1: return TLS_REG1_SLOT;
     case SCRATCH_REG2: return TLS_REG2_SLOT;
     case SCRATCH_REG3: return TLS_REG3_SLOT;
+#ifdef AARCH64
+    case SCRATCH_REG4: return TLS_REG4_SLOT;
+    case SCRATCH_REG5: return TLS_REG5_SLOT;
+#endif
     }
     /* don't assert if another reg passed: used on random regs looking for spills */
     return -1;
@@ -471,6 +475,8 @@ shared_gencode_emit(generated_code_t *gencode _IF_X86_64(bool x86_mode))
 
     ASSERT(pc < gencode->commit_end_pc);
     gencode->gen_end_pc = pc;
+
+    machine_cache_sync(gencode->gen_start_pc, gencode->gen_end_pc, true);
 }
 
 static void
@@ -874,6 +880,20 @@ arch_exit(IF_WINDOWS_ELSE_NP(bool detach_stacked_callbacks, void))
 #endif
     interp_exit();
     mangle_exit();
+
+    if (doing_detach) {
+        /* Clear for possible re-attach. */
+        shared_code = NULL;
+#if defined(X86) && defined(X64)
+        shared_code_x86 = NULL;
+        shared_code_x86_to_x64 = NULL;
+#endif
+        syscall_method = SYSCALL_METHOD_UNINITIALIZED;
+        app_sysenter_instr_addr = NULL;
+#ifdef LINUX
+        sysenter_hook_failed = false;
+#endif
+    }
 }
 
 static byte *
@@ -2714,6 +2734,11 @@ get_cleanup_and_terminate_global_do_syscall_entry()
  * the caller's retaddr in edx.  Thus, there is nothing to hook.
  */
 bool
+hook_vsyscall(dcontext_t *dcontext, bool method_changing)
+{
+    return false;
+}
+bool
 unhook_vsyscall(void)
 {
     return false;
@@ -2778,8 +2803,8 @@ unhook_vsyscall(void)
 
 #define VSYS_DISPLACED_LEN 4
 
-static bool
-hook_vsyscall(dcontext_t *dcontext)
+bool
+hook_vsyscall(dcontext_t *dcontext, bool method_changing)
 {
 #ifdef X86
     bool res = true;
@@ -2788,8 +2813,11 @@ hook_vsyscall(dcontext_t *dcontext)
     uint num_nops = 0;
     uint prot;
 
+    /* On a call on a method change the method is not yet finalized so we always try */
+    if (get_syscall_method() != SYSCALL_METHOD_SYSENTER && !method_changing)
+        return false;
+
     ASSERT(DATASEC_WRITABLE(DATASEC_RARELY_PROT));
-    IF_X64(ASSERT_NOT_REACHED()); /* no sysenter support on x64 */
     ASSERT(vsyscall_page_start != NULL && vsyscall_syscall_end_pc != NULL &&
            vsyscall_page_start == (app_pc)PAGE_START(vsyscall_syscall_end_pc));
 
@@ -2894,8 +2922,10 @@ hook_vsyscall(dcontext_t *dcontext)
     return res;
 # undef CHECK
 #elif defined(AARCHXX)
-    /* No vsyscall support needed for our ARM targets */
-    ASSERT_NOT_REACHED();
+    /* No vsyscall support needed for our ARM targets -- still called on
+     * os_process_under_dynamorio().
+     */
+    ASSERT(!method_changing);
     return false;
 #endif /* X86/ARM */
 }
@@ -2918,9 +2948,10 @@ unhook_vsyscall(void)
         if (!res)
             return false;
     }
-    memcpy(vsyscall_sysenter_return_pc, vsyscall_syscall_end_pc, len);
+    memcpy(vsyscall_sysenter_return_pc, vsyscall_sysenter_displaced_pc, len);
     /* we do not restore the 5th (junk/nop) byte (we never copied it) */
-    memset(vsyscall_syscall_end_pc, RAW_OPCODE_nop, len);
+    if (vsyscall_sysenter_displaced_pc == vsyscall_syscall_end_pc) /* <4.4.8 */
+        memset(vsyscall_syscall_end_pc, RAW_OPCODE_nop, len);
     if (!TEST(MEMPROT_WRITE, prot)) {
         res = set_protection(vsyscall_page_start, PAGE_SIZE, prot);
         ASSERT(res);
@@ -3064,7 +3095,7 @@ check_syscall_method(dcontext_t *dcontext, instr_t *instr)
             }
 #  endif
             /* Hook the sysenter continuation point so we don't lose control */
-            if (!sysenter_hook_failed && !hook_vsyscall(dcontext)) {
+            if (!sysenter_hook_failed && !hook_vsyscall(dcontext, true/*force*/)) {
                 /* PR 212570: for now we bail out to using int;
                  * for performance we should clobber the retaddr and
                  * keep the sysenters.
@@ -3144,6 +3175,37 @@ get_app_sysenter_addr()
     /* FIXME : would like to assert that this has been initialized, but interp
      * bb_process_convertible_indcall() will use it before we initialize it. */
     return app_sysenter_instr_addr;
+}
+
+size_t
+syscall_instr_length(dr_isa_mode_t mode)
+{
+    size_t syslen;
+    IF_X86_ELSE({
+        ASSERT(INT_LENGTH == SYSCALL_LENGTH);
+        ASSERT(SYSENTER_LENGTH == SYSCALL_LENGTH);
+        syslen = SYSCALL_LENGTH;
+    }, {
+        syslen = IF_ARM_ELSE((mode == DR_ISA_ARM_THUMB ?
+                              SVC_THUMB_LENGTH : SVC_ARM_LENGTH),
+                             SVC_LENGTH);
+    });
+    return syslen;
+}
+
+bool
+is_syscall_at_pc(dcontext_t *dcontext, app_pc pc)
+{
+    instr_t instr;
+    bool res = false;
+    instr_init(dcontext, &instr);
+    TRY_EXCEPT(dcontext, {
+        pc = decode(dcontext, pc, &instr);
+        res = (pc != NULL && instr_valid(&instr) && instr_is_syscall(&instr));
+    }, {
+    });
+    instr_free(dcontext, &instr);
+    return res;
 }
 
 void
@@ -3335,7 +3397,7 @@ dump_mcontext(priv_mcontext_t *context, file_t f, bool dump_xml)
 #ifdef X86
     if (preserve_xmm_caller_saved()) {
         int i, j;
-        for (i=0; i<NUM_XMM_SAVED; i++) {
+        for (i=0; i<NUM_SIMD_SAVED; i++) {
             if (YMM_ENABLED()) {
                 print_file(f, dump_xml ? "\t\tymm%d= \"0x" : "\tymm%d= 0x", i);
                 for (j = 0; j < 8; j++) {

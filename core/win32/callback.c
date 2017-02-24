@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2016 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2017 Google, Inc.  All rights reserved.
  * Copyright (c) 2002-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -136,8 +136,8 @@ static byte *
 emit_takeover_code(byte *pc);
 
 /* For detach */
-bool init_apc_go_native = false;
-bool init_apc_go_native_pause = false;
+volatile bool init_apc_go_native = false;
+volatile bool init_apc_go_native_pause = false;
 
 /* overridden by dr_preinjected, or retakeover_after_native() */
 static retakeover_point_t interception_point = INTERCEPT_PREINJECT;
@@ -1373,7 +1373,8 @@ emit_intercept_code(dcontext_t *dcontext, byte *pc, intercept_function_t callee,
     if (push_pc2 != NULL)
         *((ptr_uint_t*)push_pc2) = (ptr_uint_t)no_cleanup;
 
-    ASSERT(pc - start_pc < PAGE_SIZE && "adjust REL32_REACHABLE for alternate_after");
+    ASSERT((size_t)(pc - start_pc) < PAGE_SIZE &&
+           "adjust REL32_REACHABLE for alternate_after");
 
     /* free the instrlist_t elements */
     instrlist_clear(dcontext, &ilist);
@@ -3065,7 +3066,7 @@ intercept_new_thread(CONTEXT *cxt)
     /* init apc, check init_apc_go_native to sync w/detach */
     if (init_apc_go_native) {
         /* need to wait after checking _go_native to avoid a thread
-         * going native to early because of races between setting
+         * going native too early because of races between setting
          * _go_native and _pause */
         if (init_apc_go_native_pause) {
             /* FIXME : this along with any other logging in this
@@ -3116,7 +3117,7 @@ intercept_new_thread(CONTEXT *cxt)
         if (is_client) {
             ASSERT(is_on_dstack(dcontext, (byte *)cxt->CXT_XSP));
             /* PR 210591: hide our threads from DllMain by not executing rest
-             * of Ldr init code and going straight to target.  create_thread()
+             * of Ldr init code and going straight to target.  our_create_thread()
              * already set up the arg in cxt.
              */
             nt_continue(cxt);
@@ -4512,7 +4513,7 @@ dump_context_info(CONTEXT *context, file_t file, bool all)
         TESTALL(CONTEXT_XMM_FLAG, context->ContextFlags)) {
         int i, j;
         byte *ymmh_area;
-        for (i=0; i<NUM_XMM_SAVED; i++) {
+        for (i=0; i<NUM_SIMD_SAVED; i++) {
             LOG(file, LOG_ASYNCH, 2, "xmm%d=0x", i);
             /* This would be simpler if we had uint64 fields in dr_xmm_t but
              * that complicates our struct layouts */
@@ -4988,7 +4989,7 @@ check_internal_exception(dcontext_t *dcontext, CONTEXT *cxt,
                  * own gencode.  client_exception_event() won't return if client
                  * wants to re-execute faulting instr.
                  */
-                if (!IS_INTERNAL_STRING_OPTION_EMPTY(client_lib)) {
+                if (CLIENTS_EXIST()) {
                     /* raw_mcontext equals mcontext */
                     context_to_mcontext(raw_mcontext, cxt);
                     client_exception_event(dcontext, cxt, pExcptRec, raw_mcontext, NULL);
@@ -5319,7 +5320,7 @@ intercept_exception(app_state_at_intercept_t *state)
         });
 
 #ifdef CLIENT_INTERFACE
-        if (!IS_INTERNAL_STRING_OPTION_EMPTY(client_lib) &&
+        if (CLIENTS_EXIST() &&
             is_in_client_lib(pExcptRec->ExceptionAddress)) {
             /* i#1354: client might fault touching a code page we made read-only.
              * If so, just re-execute post-page-prot-change (MOD_CODE_APP_CXT), if
@@ -5439,7 +5440,7 @@ intercept_exception(app_state_at_intercept_t *state)
             if (!takeover) {
 #ifdef CLIENT_INTERFACE
                 /* -probe_api client should get exception events too */
-                if (!IS_INTERNAL_STRING_OPTION_EMPTY(client_lib)) {
+                if (CLIENTS_EXIST()) {
                     /* raw_mcontext equals mcontext */
                     context_to_mcontext(&raw_mcontext, cxt);
                     client_exception_event(dcontext, cxt, pExcptRec, &raw_mcontext, f);
@@ -5558,7 +5559,7 @@ intercept_exception(app_state_at_intercept_t *state)
             /* remember faulting pc */
             faulting_pc = (cache_pc) pExcptRec->ExceptionAddress;
 #ifdef CLIENT_INTERFACE
-            if (!IS_INTERNAL_STRING_OPTION_EMPTY(client_lib)) {
+            if (CLIENTS_EXIST()) {
                 /* i#182/PR 449996: we provide the pre-translation context */
                 context_to_mcontext(&raw_mcontext, cxt);
             }
@@ -5681,7 +5682,7 @@ intercept_exception(app_state_at_intercept_t *state)
 
 #ifdef CLIENT_INTERFACE
             /* Inform client of exceptions */
-            if (!IS_INTERNAL_STRING_OPTION_EMPTY(client_lib)) {
+            if (CLIENTS_EXIST()) {
                 client_exception_event(dcontext, cxt, pExcptRec, &raw_mcontext, f);
             }
 #endif
@@ -5715,7 +5716,7 @@ intercept_exception(app_state_at_intercept_t *state)
             });
 #ifdef CLIENT_INTERFACE
             /* Inform client of forged exceptions (i#1775) */
-            if (!IS_INTERNAL_STRING_OPTION_EMPTY(client_lib)) {
+            if (CLIENTS_EXIST()) {
                 /* raw_mcontext equals mcontext */
                 context_to_mcontext(&raw_mcontext, cxt);
                 client_exception_event(dcontext, cxt, pExcptRec, &raw_mcontext, NULL);
@@ -5835,6 +5836,12 @@ initialize_exception_record(EXCEPTION_RECORD* rec, app_pc exception_address,
         break;
     case ILLEGAL_INSTRUCTION_EXCEPTION:
         rec->ExceptionCode = EXCEPTION_ILLEGAL_INSTRUCTION;
+        break;
+    case GUARD_PAGE_EXCEPTION:
+        rec->ExceptionCode = STATUS_GUARD_PAGE_VIOLATION;
+        rec->NumberParameters = 2;
+        rec->ExceptionInformation[0] = EXCEPTION_EXECUTE_FAULT /* execution tried */;
+        rec->ExceptionInformation[1] = (ptr_uint_t)exception_address;
         break;
     default:
         ASSERT_NOT_REACHED();
@@ -6647,7 +6654,7 @@ intercept_load_dll(app_state_at_intercept_t *state)
     LOG(GLOBAL, LOG_VMAREAS, 1, "intercept_load_dll: %S\n", name->Buffer);
     LOG(GLOBAL, LOG_VMAREAS, 2, "\tpath=%S\n",
         /* win8 LdrLoadDll seems to take small integers instead of paths */
-        ((ptr_int_t)path <= PAGE_SIZE) ? L"NULL" : path);
+        ((ptr_int_t)path <= (ptr_int_t)PAGE_SIZE) ? L"NULL" : path);
     LOG(GLOBAL, LOG_VMAREAS, 2, "\tcharacteristics=%d\n",
         characteristics ? *characteristics : 0);
     ASSERT(should_intercept_LdrLoadDll());
@@ -7657,6 +7664,11 @@ callback_interception_unintercept()
 
     free_intercept_list();
 
+    if (doing_detach) {
+        DEBUG_DECLARE(bool ok =)
+            make_writable(interception_code, INTERCEPTION_CODE_SIZE);
+        ASSERT(ok);
+    }
     DODEBUG(callback_interception_unintercepted = true;);
 }
 
@@ -8017,7 +8029,7 @@ enum {
  *   0:000> dds 12fdb4
  *   0012fdb4  0012fe2c
  *   0012fdb8  77f3b744 KERNEL32!_except_handler3
- *   0012fdbc  77f3d308 KERNEL32!ntdll_NULL_THUNK_DATA+0xebc
+ *   0012fdbc  77f3d308 KERNEL32!ntdll_NULL_THUNK_DATA+0xebc
  *
  *   and the handler is the instr after the push immed:
  *   0:000> dds 77f3d308

@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2016 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2017 Google, Inc.  All rights reserved.
  * Copyright (c) 2003-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -207,6 +207,9 @@ static enum {
 static void tls_exit(void);
 
 #endif /* !NOT_DYNAMORIO_CORE_PROPER */
+
+/* cached value */
+static PEB *own_peb = NULL;
 
 /****************************************************************************
  * Defines only needed internally to this file
@@ -514,6 +517,11 @@ syscalls_init()
      *    77ced5c7 c3              ret
      *    77ced5c8 eacfd5ce773300  jmp     0033:77CED5CF
      *    77ced5cf 41              inc     ecx
+     *   win10-1607 wow64:
+     *    ntdll!Wow64SystemServiceCall:
+     *    77c32330 ff251812cc77    jmp     dword ptr [ntdll!Wow64Transition (77cc1218)]
+     *    0:000> U poi(77cc1218)
+     *    58787000 ea097078583300  jmp     0033:58787009
      *  win10-TH2(1511) x64:
      *    00007ff9`13185630 4c8bd1          mov     r10,rcx
      *    00007ff9`13185633 b843000000      mov     eax,43h
@@ -618,7 +626,6 @@ syscalls_init()
         ASSERT(*(ushort *)(pc + 10) == 0xd2ff);
         ASSERT(is_wow64_process(NT_CURRENT_PROCESS));
         tgt = *(app_pc *)(pc + 6);
-        ASSERT(*(tgt + 0x18) == 0xea);
         dr_which_syscall_t = DR_SYSCALL_WOW64;
         set_syscall_method(SYSCALL_METHOD_WOW64);
         wow64_syscall_call_tgt = tgt;
@@ -730,6 +737,13 @@ ntdll_exit(void)
 {
 #if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
     tls_exit();
+    set_ntdll_base(NULL);
+
+    if (doing_detach) {
+        own_peb = NULL;
+        sysenter_tls_offset = 0xffffffff;
+        nt_wrappers_intercepted = true;
+    }
 #endif
 }
 
@@ -1011,7 +1025,6 @@ get_own_peb()
 {
     /* alt. we could use get_own_teb->PEBptr, but since we're remembering the
      * results of the first lookup doesn't really gain us much */
-    static PEB *own_peb;
     if (own_peb == NULL) {
         own_peb = get_peb(NT_CURRENT_PROCESS);
         ASSERT(own_peb != NULL);
@@ -1153,7 +1166,7 @@ context_to_mcontext_internal(priv_mcontext_t *mcontext, CONTEXT *cxt)
         /* no harm done if no sse support */
         /* CONTEXT_FLOATING_POINT or CONTEXT_EXTENDED_REGISTERS */
         int i;
-        for (i = 0; i < NUM_XMM_SLOTS; i++)
+        for (i = 0; i < NUM_SIMD_SLOTS; i++)
             memcpy(&mcontext->ymm[i], CXT_XMM(cxt, i), XMM_REG_SIZE);
     }
     /* if XSTATE is NOT set, the app has NOT used any ymm state and
@@ -1163,7 +1176,7 @@ context_to_mcontext_internal(priv_mcontext_t *mcontext, CONTEXT *cxt)
         byte *ymmh_area = context_ymmh_saved_area(cxt);
         if (ymmh_area != NULL) {
             int i;
-            for (i = 0; i < NUM_XMM_SLOTS; i++) {
+            for (i = 0; i < NUM_SIMD_SLOTS; i++) {
                 memcpy(&mcontext->ymm[i].u32[4],
                        &YMMH_AREA(ymmh_area, i).u32[0],
                        YMMH_REG_SIZE);
@@ -1255,7 +1268,7 @@ mcontext_to_context(CONTEXT *cxt, priv_mcontext_t *mcontext, bool set_cur_seg)
         memcpy(&cxt->ExtendedRegisters, fpstate, written);
 #endif
         /* Now update w/ the xmm values from mcontext */
-        for (i = 0; i < NUM_XMM_SLOTS; i++)
+        for (i = 0; i < NUM_SIMD_SLOTS; i++)
             memcpy(CXT_XMM(cxt, i), &mcontext->ymm[i], XMM_REG_SIZE);
     }
     if (CONTEXT_PRESERVE_YMM && TESTALL(CONTEXT_XSTATE, cxt->ContextFlags)) {
@@ -1285,7 +1298,7 @@ mcontext_to_context(CONTEXT *cxt, priv_mcontext_t *mcontext, bool set_cur_seg)
             memcpy(&YMMH_AREA(ymmh_area, 6).u32[0], &ymms[0].u32[4], YMMH_REG_SIZE);
             memcpy(&YMMH_AREA(ymmh_area, 7).u32[0], &ymms[1].u32[4], YMMH_REG_SIZE);
 #endif
-            for (i = 0; i < NUM_XMM_SLOTS; i++) {
+            for (i = 0; i < NUM_SIMD_SLOTS; i++) {
                 memcpy(&YMMH_AREA(ymmh_area, i).u32[0],
                        &mcontext->ymm[i].u32[4],
                        YMMH_REG_SIZE);
@@ -1365,7 +1378,7 @@ static bool alt_tls_spare_taken[TLS_SPAREBYTES_SLOTS];
 # define TLS_POSTTEB_SLOTS 64
 static bool alt_tls_post_taken[TLS_POSTTEB_SLOTS];
 /* Use the slots at the end of the 2nd page */
-# define TLS_POSTTEB_BASE_OFFS (PAGE_SIZE*2 - TLS_POSTTEB_SLOTS*sizeof(void*))
+# define TLS_POSTTEB_BASE_OFFS ((uint)PAGE_SIZE*2 - TLS_POSTTEB_SLOTS*sizeof(void*))
 #endif
 
 static void
@@ -3317,6 +3330,13 @@ query_time_100ns()
 }
 
 uint64
+query_time_micros()
+{
+    LONGLONG time100ns = query_time_100ns();
+    return ((uint64)time100ns / TIMER_UNITS_PER_MICROSECOND);
+}
+
+uint64
 query_time_millis()
 {
     LONGLONG time100ns = query_time_100ns();
@@ -4424,11 +4444,11 @@ create_process(wchar_t *exe, wchar_t *cmdline)
     NTPRINT("create_process: created section and process\n");
 
     /* FIXME : if thread returns from its EntryPoint function will crash because
-     * create_thread skips the kernel32 ThreadStartThunk */
+     * our_create_thread skips the kernel32 ThreadStartThunk */
     /* FIXME : need to know whether target process is 32bit or 64bit, for now
      * assume 32bit. */
-    hthread = create_thread(hProcess, false, sii.EntryPoint, NULL, NULL, 0,
-                            sii.StackReserve, sii.StackCommit, TRUE, &tid);
+    hthread = our_create_thread(hProcess, false, sii.EntryPoint, NULL, NULL, 0,
+                                sii.StackReserve, sii.StackCommit, TRUE, &tid);
 
     if (hthread == INVALID_HANDLE_VALUE) {
         NTPRINT("create_process: failed to create thread\n");
@@ -4488,7 +4508,7 @@ create_process(wchar_t *exe, wchar_t *cmdline)
  * arg.
  */
 /* returns INVALID_HANDLE_VALUE on error */
-HANDLE
+static HANDLE
 create_thread_common(HANDLE hProcess, bool target_64bit, void *start_addr,
                      void *arg, const void *arg_buf, size_t arg_buf_size,
                      USER_STACK *stack, bool suspended, thread_id_t *tid)
@@ -4588,9 +4608,10 @@ create_thread_common(HANDLE hProcess, bool target_64bit, void *start_addr,
 
 /* Creates a new stack w/ guard page */
 HANDLE
-create_thread(HANDLE hProcess, bool target_64bit, void *start_addr,
-              void *arg, const void *arg_buf, size_t arg_buf_size,
-              uint stack_reserve, uint stack_commit, bool suspended, thread_id_t *tid)
+our_create_thread(HANDLE hProcess, bool target_64bit, void *start_addr,
+                  void *arg, const void *arg_buf, size_t arg_buf_size,
+                  uint stack_reserve, uint stack_commit, bool suspended,
+                  thread_id_t *tid)
 {
     USER_STACK stack = {0};
     uint num_commit_bytes, old_prot;
@@ -4612,7 +4633,7 @@ create_thread(HANDLE hProcess, bool target_64bit, void *start_addr,
         ((byte *)stack.ExpandableStackBottom) + stack_reserve;
     stack.ExpandableStackLimit =
         ((byte *)stack.ExpandableStackBase) - stack_commit;
-    num_commit_bytes = stack_commit + PAGE_SIZE;
+    num_commit_bytes = stack_commit + (uint)PAGE_SIZE;
     p = ((byte *)stack.ExpandableStackBase) - num_commit_bytes;
     if (!NT_SUCCESS(nt_remote_allocate_virtual_memory(hProcess, &p, num_commit_bytes,
                                                       PAGE_READWRITE, MEM_COMMIT))) {
@@ -4632,10 +4653,10 @@ create_thread(HANDLE hProcess, bool target_64bit, void *start_addr,
 
 /* Uses caller-allocated stack */
 HANDLE
-create_thread_have_stack(HANDLE hProcess, bool target_64bit, void *start_addr,
-                         void *arg, const void *arg_buf, size_t arg_buf_size,
-                         byte *stack_base, size_t stack_size,
-                         bool suspended, thread_id_t *tid)
+our_create_thread_have_stack(HANDLE hProcess, bool target_64bit, void *start_addr,
+                             void *arg, const void *arg_buf, size_t arg_buf_size,
+                             byte *stack_base, size_t stack_size,
+                             bool suspended, thread_id_t *tid)
 {
     USER_STACK stack = {0};
     stack.ExpandableStackBase = stack_base;
@@ -4733,7 +4754,7 @@ free_library(module_handle_t lib)
  * a unicode string and what looks like handling the flags for the ex version. */
 /* returns NULL on failure */
 module_handle_t
-get_module_handle(wchar_t *lib_name)
+get_module_handle(const wchar_t *lib_name)
 {
     UNICODE_STRING ulib_name;
     HANDLE hMod;

@@ -114,11 +114,15 @@
 
 #ifdef AARCHXX
 # ifdef ANDROID
-/* We have our own slot at the end of our instance of Android's pthread_internal_t */
+/* We have our own slot at the end of our instance of Android's pthread_internal_t.
+ * However, its offset varies by Android version, requiring indirection through
+ * a variable.
+ */
 #  ifdef AARCH64
 #   error NYI
 #  else
-#   define DR_TLS_BASE_OFFSET  1100
+extern uint android_tls_base_offs;
+#   define DR_TLS_BASE_OFFSET  android_tls_base_offs
 #  endif
 # else
 /* The TLS slot for DR's TLS base.
@@ -155,6 +159,8 @@ thread_id_t get_tls_thread_id(void);
 thread_id_t get_sys_thread_id(void);
 bool is_thread_terminated(dcontext_t *dcontext);
 void os_wait_thread_terminated(dcontext_t *dcontext);
+void os_wait_thread_detached(dcontext_t *dcontext);
+void os_signal_thread_detach(dcontext_t *dcontext);
 void os_tls_pre_init(int gdt_index);
 /* XXX: reg_id_t is not defined here, use ushort instead */
 ushort os_get_app_tls_base_offset(ushort/*reg_id_t*/ seg);
@@ -186,7 +192,15 @@ int get_libc_errno(void);
 void set_libc_errno(int val);
 
 /* i#46: Our env manipulation routines. */
+#ifdef STATIC_LIBRARY
+/* For STATIC_LIBRARY, we want to support the app setting DYNAMORIO_OPTIONS
+ * after our constructor ran: thus we do not want to cache the environ pointer.
+ */
+extern char **environ;
+# define our_environ environ
+#else
 extern char **our_environ;
+#endif
 void dynamorio_set_envp(char **envp);
 #if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
 /* drinjectlib wants the libc version while the core wants the private version */
@@ -291,9 +305,6 @@ os_handle_mov_seg(dcontext_t *dcontext, byte *pc);
 
 void init_emulated_brk(app_pc exe_end);
 
-/* in arch.c */
-bool unhook_vsyscall(void);
-
 /***************************************************************************/
 /* in signal.c */
 
@@ -388,6 +399,9 @@ void
 set_app_lib_tls_base_from_clone_record(dcontext_t *dcontext, void *record);
 #endif
 
+void
+os_clone_post(dcontext_t *dcontext);
+
 app_pc
 signal_thread_inherit(dcontext_t *dcontext, void *clone_record);
 
@@ -396,6 +410,9 @@ signal_fork_init(dcontext_t *dcontext);
 
 void
 signal_remove_handlers(dcontext_t *dcontext);
+
+void
+signal_reinstate_handlers(dcontext_t *dcontext);
 
 bool
 set_itimer_callback(dcontext_t *dcontext, int which, uint millisec,
