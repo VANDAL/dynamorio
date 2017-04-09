@@ -347,7 +347,6 @@ parse_option_array(client_id_t client_id, const char *opstr,
     *argv = a;
 }
 
-#ifdef DEBUG
 static bool
 free_option_array(int argc, const char **argv)
 {
@@ -358,7 +357,6 @@ free_option_array(int argc, const char **argv)
     HEAP_ARRAY_FREE(GLOBAL_DCONTEXT, argv, char *, argc, ACCT_CLIENT, UNPROTECTED);
     return true;
 }
-#endif
 
 static void
 add_callback(callback_list_t *vec, void (*func)(void), bool unprotect)
@@ -715,7 +713,6 @@ instrument_init(void)
     }
 }
 
-#ifdef DEBUG
 void
 free_callback_list(callback_list_t *vec)
 {
@@ -768,12 +765,10 @@ void free_all_callback_lists()
     free_callback_list(&resurrect_rw_callbacks);
     free_callback_list(&persist_patch_callbacks);
 }
-#endif /* DEBUG */
 
 void
 instrument_exit(void)
 {
-    DEBUG_DECLARE(size_t i);
     /* Note - currently own initexit lock when this is called (see PR 227619). */
 
     /* support dr_get_mcontext() from the exit event */
@@ -784,17 +779,17 @@ instrument_exit(void)
               * to the call_all macro.  Bogus NULL arg */
              NULL);
 
-#ifdef DEBUG
-    /* Unload all client libs and free any allocated storage */
-    for (i=0; i<num_client_libs; i++) {
-        free_callback_list(&client_libs[i].nudge_callbacks);
-        unload_shared_library(client_libs[i].lib);
-        if (client_libs[i].argv != NULL)
-            free_option_array(client_libs[i].argc, client_libs[i].argv);
+    if (IF_DEBUG_ELSE(true, doing_detach)) {
+        /* Unload all client libs and free any allocated storage */
+        size_t i;
+        for (i=0; i<num_client_libs; i++) {
+            free_callback_list(&client_libs[i].nudge_callbacks);
+            unload_shared_library(client_libs[i].lib);
+            if (client_libs[i].argv != NULL)
+                free_option_array(client_libs[i].argc, client_libs[i].argv);
+        }
+        free_all_callback_lists();
     }
-
-    free_all_callback_lists();
-#endif
 
     vmvector_delete_vector(GLOBAL_DCONTEXT, client_aux_libs);
     client_aux_libs = NULL;
@@ -1372,6 +1367,7 @@ instrument_thread_exit(dcontext_t *dcontext)
     HEAP_TYPE_FREE(dcontext, dcontext->client_data, client_data_t,
                    ACCT_OTHER, UNPROTECTED);
     dcontext->client_data = NULL; /* for mutex_wait_contended_lock() */
+    dcontext->is_client_thread_exiting = true; /* for is_using_app_peb() */
 
 #endif /* DEBUG */
 }
@@ -1785,13 +1781,17 @@ create_and_initialize_module_data(app_pc start, app_pc end, app_pc entry_point,
         HEAP_ARRAY_ALLOC(GLOBAL_DCONTEXT, module_segment_data_t,
                          num_segments, ACCT_VMAREAS, PROTECTED);
     if (os_segments != NULL) {
+        ASSERT(segments == NULL);
         for (i = 0; i < num_segments; i++) {
             copy->segments[i].start = os_segments[i].start;
             copy->segments[i].end = os_segments[i].end;
             copy->segments[i].prot = os_segments[i].prot;
         }
-    } else
-        memcpy(copy->segments, segments, num_segments*sizeof(module_segment_data_t));
+    } else {
+        ASSERT(segments != NULL);
+        if (segments != NULL)
+            memcpy(copy->segments, segments, num_segments*sizeof(module_segment_data_t));
+    }
     copy->timestamp = timestamp;
 # ifdef MACOS
     copy->current_version = current_version;

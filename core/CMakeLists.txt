@@ -199,7 +199,8 @@ elseif (ARM)
     arch/${ARCH_NAME}/table_t32_16_it.c)
 elseif (AARCH64)
   set(DECODER_SRCS ${DECODER_SRCS}
-    arch/${ARCH_NAME}/codec.c)
+    arch/${ARCH_NAME}/codec.c
+    arch/${ARCH_NAME}/build_ldstex.c)
 endif ()
 
 set(ARCH_SRCS
@@ -1006,7 +1007,7 @@ set_target_properties(dynamorio PROPERTIES
   IMPORTED_LINK_INTERFACE_LIBRARIES_NOCONFIG "")
 install_exported_target(dynamorio ${INSTALL_LIB}
   # CMake doesn't set +x on shared libraries, so we have to ask for it.
-  PERMISSIONS ${owner_access} OWNER_EXECUTE GROUP_READ GROUP_EXECUTE)
+  PERMISSIONS ${owner_access} OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 DR_export_target(dynamorio)
 
 # XXX i#1997: not fully supported on Mac yet

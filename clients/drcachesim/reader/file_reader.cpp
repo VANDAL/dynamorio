@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2016 Google, Inc.  All rights reserved.
+ * Copyright (c) 2016-2017 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -32,7 +32,6 @@
 
 #include <assert.h>
 #include <fstream>
-#include <map>
 #include "file_reader.h"
 #include "../common/memref.h"
 #include "../common/utils.h"

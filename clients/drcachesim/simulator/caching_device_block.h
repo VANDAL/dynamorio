@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2015-2016 Google, Inc.  All rights reserved.
+ * Copyright (c) 2015-2017 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -53,6 +53,8 @@ class caching_device_block_t
     // we expect any use of counter to only occur *after* a valid tag is put in place,
     // where for the current replacement code we also set the counter at that time.
     caching_device_block_t() : tag(TAG_INVALID), counter(0) {}
+    // Destructor must be virtual and default is not.
+    virtual ~caching_device_block_t() {}
 
     addr_t tag;
 

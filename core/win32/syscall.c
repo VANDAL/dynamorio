@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2016 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2017 Google, Inc.  All rights reserved.
  * Copyright (c) 2006-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -1532,7 +1532,7 @@ add_dr_env_vars(dcontext_t *dcontext, HANDLE phandle, wchar_t **env_ptr)
                        wenv_to_propagate[i], get_config_val(env_to_propagate[i]));
             NULL_TERMINATE_BUFFER(buf);
             if (!nt_write_virtual_memory(phandle, new_env + sz/sizeof(*env),
-                                         buf, sz_var[i], &got))
+                                         buf, sz_var[i], NULL))
                 goto add_dr_env_failure;
             sz += sz_var[i];
         }
@@ -1541,7 +1541,7 @@ add_dr_env_vars(dcontext_t *dcontext, HANDLE phandle, wchar_t **env_ptr)
     /* write final 0 */
     buf[0] = 0;
     if (!nt_write_virtual_memory(phandle, new_env + sz/sizeof(*env), buf,
-                                 sizeof(*env), &got))
+                                 sizeof(*env), NULL))
         goto add_dr_env_failure;
 
     /* install new env */
@@ -1551,7 +1551,7 @@ add_dr_env_vars(dcontext_t *dcontext, HANDLE phandle, wchar_t **env_ptr)
             "%s: failed to mark "PFX" writable\n", __FUNCTION__, env_ptr);
         goto add_dr_env_failure;
     }
-    if (!nt_write_virtual_memory(phandle, env_ptr, &new_env, sizeof(new_env), &got))
+    if (!nt_write_virtual_memory(phandle, env_ptr, &new_env, sizeof(new_env), NULL))
         goto add_dr_env_failure;
     if (!nt_remote_protect_virtual_memory(phandle, (byte*)PAGE_START(env_ptr), PAGE_SIZE,
                                           old_prot, &old_prot)) {
@@ -1853,8 +1853,15 @@ presys_SetContextThread(dcontext_t *dcontext, reg_t *param_base)
     /* FIXME : we are going to read and write to cxt, which may be unsafe */
     ASSERT(tid != 0xFFFFFFFF);
     LOG(THREAD, LOG_SYSCALLS|LOG_THREADS, IF_DGCDIAG_ELSE(1, 2),
-        "syscall: NtSetContextThread handle="PFX" tid=%d cxt->Xip="PFX"\n",
-        thread_handle, tid, cxt->CXT_XIP);
+        "syscall: NtSetContextThread handle="PFX" tid=%d cxt->Xip="PFX" flags="PFX"\n",
+        thread_handle, tid, cxt->CXT_XIP, cxt->ContextFlags);
+    if (get_thread_id() == tid) {
+        /* Simple case when called on own thread. */
+        /* FIXME i#2249 : we should handle these flags. */
+        ASSERT_NOT_IMPLEMENTED(!TEST(CONTEXT_CONTROL, cxt->ContextFlags) &&
+                               !TEST(CONTEXT_DEBUG_REGISTERS, cxt->ContextFlags));
+        return execute_syscall;
+    }
     mutex_lock(&thread_initexit_lock); /* need lock to lookup thread */
     if (intercept_asynch_for_thread(tid, false/*no unknown threads*/)) {
         priv_mcontext_t mcontext;
@@ -4110,15 +4117,17 @@ void post_system_call(dcontext_t *dcontext)
         /* FIXME : we modified the passed in context, we should restore it
          * to app state (same for SYS_Continue though is more difficult there)
          */
-        mutex_lock(&thread_initexit_lock); /* need lock to lookup thread */
-        if (intercept_asynch_for_thread(tid, false/*no unknown threads*/)) {
-            /* Case 10101: we shouldn't get here since we now skip the system call,
-             * unless it should fail for permission issues */
-            ASSERT(dcontext->expect_last_syscall_to_fail);
-            /* must wake up thread so it can go to nt_continue_dynamo_start */
-            nt_thread_resume(thread_handle, NULL);
+        if (tid != get_thread_id()) {
+            mutex_lock(&thread_initexit_lock); /* need lock to lookup thread */
+            if (intercept_asynch_for_thread(tid, false/*no unknown threads*/)) {
+                /* Case 10101: we shouldn't get here since we now skip the system call,
+                 * unless it should fail for permission issues */
+                ASSERT(dcontext->expect_last_syscall_to_fail);
+                /* must wake up thread so it can go to nt_continue_dynamo_start */
+                nt_thread_resume(thread_handle, NULL);
+            }
+            mutex_unlock(&thread_initexit_lock); /* need lock to lookup thread */
         }
-        mutex_unlock(&thread_initexit_lock); /* need lock to lookup thread */
     }
     else if (sysnum == syscalls[SYS_OpenThread]) {
         postsys_OpenThread(dcontext, param_base, success);

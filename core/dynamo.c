@@ -516,6 +516,8 @@ dynamorio_app_init(void)
          * N.B.: we never de-allocate initstack (see comments in app_exit)
          */
         initstack = (byte *) stack_alloc(DYNAMORIO_STACK_SIZE, NULL);
+        LOG(GLOBAL, LOG_SYNCH, 2, "initstack is "PFX"-"PFX"\n",
+            initstack - DYNAMORIO_STACK_SIZE, initstack);
 
 #if defined(WINDOWS) && defined(STACK_GUARD_PAGE)
         /* PR203701: separate stack for error reporting when the
@@ -1645,6 +1647,9 @@ initialize_dynamo_context(dcontext_t *dcontext)
 #ifdef WINDOWS
 #ifdef CLIENT_INTERFACE
     dcontext->app_errno = 0;
+# ifdef DEBUG
+    dcontext->is_client_thread_exiting = false;
+# endif
 #endif
     dcontext->sys_param_base = NULL;
     /* always initialize aslr_context */
@@ -2230,7 +2235,8 @@ dynamo_thread_init(byte *dstack_in, priv_mcontext_t *mc
         IF_CLIENT_INTERFACE_ELSE(client_thread ? "CLIENT " : "", ""),
         get_thread_id(), dcontext);
     LOG(THREAD, LOG_TOP|LOG_THREADS, 1,
-        "DR stack is "PFX"-"PFX"\n", dcontext->dstack - DYNAMORIO_STACK_SIZE, dcontext->dstack);
+        "DR stack is "PFX"-"PFX"\n", dcontext->dstack - DYNAMORIO_STACK_SIZE,
+        dcontext->dstack);
 #endif
 
 #ifdef DEADLOCK_AVOIDANCE
@@ -2609,11 +2615,14 @@ dr_app_setup(void)
     dcontext_t *dcontext;
     dr_api_entry = true;
     res = dynamorio_app_init();
-    /* It would be more efficient to avoid setting up signal handlers and
-     * avoid hooking vsyscall during init, but the code is simpler this way.
+    /* For dr_api_entry, we do not install signal handlers during init (to avoid
+     * races: i#2335): we delay until dr_app_start().  Plus the vsyscall hook is
+     * not set up until we find out the syscall method.  Thus we're already
+     * "os_process_not_under_dynamorio".
+     * We can't as easily avoid initializing the thread TLS and then dropping
+     * it, however, as parts of init assume we have TLS.
      */
     dcontext = get_thread_private_dcontext();
-    os_process_not_under_dynamorio(dcontext);
     dynamo_thread_not_under_dynamo(dcontext);
     return res;
 }
@@ -2639,7 +2648,8 @@ dr_app_cleanup(void)
      */
     tr = thread_lookup(get_thread_id());
     if (tr != NULL && tr->dcontext != NULL) {
-        os_process_under_dynamorio(tr->dcontext);
+        os_process_under_dynamorio_initiate(tr->dcontext);
+        os_process_under_dynamorio_complete(tr->dcontext);
         dynamo_thread_under_dynamo(tr->dcontext);
     }
     return dynamorio_app_exit();
@@ -2758,7 +2768,7 @@ dynamorio_take_over_threads(dcontext_t *dcontext)
     bool found_threads;
     uint attempts = 0;
 
-    os_process_under_dynamorio(dcontext);
+    os_process_under_dynamorio_initiate(dcontext);
     /* XXX i#1305: we should suspend all the other threads for DR init to
      * satisfy the parts of the init process that assume there are no races.
      */
@@ -2768,6 +2778,7 @@ dynamorio_take_over_threads(dcontext_t *dcontext)
         if (found_threads && !bb_lock_start)
             bb_lock_start = true;
     } while (found_threads && attempts < MAX_TAKE_OVER_ATTEMPTS);
+    os_process_under_dynamorio_complete(dcontext);
 
     if (found_threads) {
         SYSLOG(SYSLOG_WARNING, INTERNAL_SYSLOG_WARNING,

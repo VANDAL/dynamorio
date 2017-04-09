@@ -347,6 +347,17 @@ static byte *app_brk_cur;
 static byte *app_brk_end;
 #endif
 
+#ifdef MACOS
+/* xref i#1404: we should expose these via the dr_get_os_version() API */
+static int macos_version;
+# define MACOS_VERSION_SIERRA 16
+# define MACOS_VERSION_EL_CAPITAN 15
+# define MACOS_VERSION_YOSEMITE 14
+# define MACOS_VERSION_MAVERICKS 13
+# define MACOS_VERSION_MOUNTAIN_LION 12
+# define MACOS_VERSION_LION 11
+#endif
+
 static bool
 is_readable_without_exception_internal(const byte *pc, size_t size, bool query_os);
 
@@ -819,6 +830,7 @@ get_uname(void)
             SYSLOG(SYSLOG_WARNING, UNSUPPORTED_OS_VERSION, 3, get_application_name(),
                    get_application_pid(), uinfo.release);
         }
+        macos_version = kernel_major;
     }
 #endif
 }
@@ -986,6 +998,13 @@ set_executable_path(const char *exe_path)
     NULL_TERMINATE_BUFFER(executable_path);
 }
 
+/* The OSX kernel used to place the bare executable path above envp.
+ * On recent XNU versions, the kernel now prefixes the executable path
+ * with the string executable_path= so it can be parsed getenv style.
+ */
+#ifdef MACOS
+# define EXECUTABLE_KEY "executable_path="
+#endif
 /* i#189: we need to re-cache after a fork */
 static char *
 get_application_name_helper(bool ignore_cache, bool full_path)
@@ -1012,6 +1031,9 @@ get_application_name_helper(bool ignore_cache, bool full_path)
             } while (*env != NULL);
             env++; /* Skip the NULL separating the envp array from exec_path */
             c = *env;
+            if (strncmp(EXECUTABLE_KEY, c, strlen(EXECUTABLE_KEY)) == 0) {
+                c += strlen(EXECUTABLE_KEY);
+            }
             /* If our frontends always absolute-ize paths prior to exec,
              * this should usually be absolute -- but we go ahead and
              * handle relative just in case (and to handle child processes).
@@ -1135,23 +1157,22 @@ get_timer_frequency()
 uint
 query_time_seconds(void)
 {
-#ifdef MACOS
-    struct timeval tv;
-    /* MacOS returns usecs:secs and does not set the timeval struct */
-    uint64 val = dynamorio_syscall(SYS_gettimeofday, 2, &tv, NULL);
-    if ((int)val < 0)
-        return 0;
-    return (uint)val + UTC_TO_EPOCH_SECONDS;
-#else
-    /* SYS_time is considered obsolete, and is unsupported on ARM */
     struct timeval current_time;
-    if (dynamorio_syscall(SYS_gettimeofday, 2, &current_time, NULL) >= 0) {
+    uint64 val = dynamorio_syscall(SYS_gettimeofday, 2, &current_time, NULL);
+#ifdef MACOS
+    /* MacOS before Sierra returns usecs:secs and does not set the timeval struct. */
+    if (macos_version < MACOS_VERSION_SIERRA) {
+        if ((int)val < 0)
+            return 0;
+        return (uint)val + UTC_TO_EPOCH_SECONDS;
+    }
+#endif
+    if ((int)val >= 0) {
         return current_time.tv_sec + UTC_TO_EPOCH_SECONDS;
     } else {
         ASSERT_NOT_REACHED();
         return 0;
     }
-#endif
 }
 
 /* milliseconds since 1601 */
@@ -1159,15 +1180,17 @@ uint64
 query_time_millis()
 {
     struct timeval current_time;
-#ifdef MACOS
-    /* MacOS returns usecs:secs and does not set the timeval struct */
     uint64 val = dynamorio_syscall(SYS_gettimeofday, 2, &current_time, NULL);
-    current_time.tv_sec = (uint) val;
-    current_time.tv_usec = (uint)(val >> 32);
-    if ((int)val > 0) {
-#else
-    if (dynamorio_syscall(SYS_gettimeofday, 2, &current_time, NULL) >= 0) {
+#ifdef MACOS
+    /* MacOS before Sierra returns usecs:secs and does not set the timeval struct. */
+    if (macos_version < MACOS_VERSION_SIERRA) {
+        if ((int)val > 0) {
+            current_time.tv_sec = (uint) val;
+            current_time.tv_usec = (uint)(val >> 32);
+        }
+    }
 #endif
+    if ((int)val >= 0) {
         uint64 res = (((uint64)current_time.tv_sec) * 1000) +
             (current_time.tv_usec / 1000);
         res += UTC_TO_EPOCH_SECONDS * 1000;
@@ -1183,15 +1206,17 @@ uint64
 query_time_micros()
 {
     struct timeval current_time;
-#ifdef MACOS
-    /* MacOS returns usecs:secs and does not set the timeval struct */
     uint64 val = dynamorio_syscall(SYS_gettimeofday, 2, &current_time, NULL);
-    current_time.tv_sec = (uint) val;
-    current_time.tv_usec = (uint)(val >> 32);
-    if ((int)val > 0) {
-#else
-    if (dynamorio_syscall(SYS_gettimeofday, 2, &current_time, NULL) >= 0) {
+#ifdef MACOS
+    /* MacOS before Sierra returns usecs:secs and does not set the timeval struct. */
+    if (macos_version < MACOS_VERSION_SIERRA) {
+        if ((int)val > 0) {
+            current_time.tv_sec = (uint) val;
+            current_time.tv_usec = (uint)(val >> 32);
+        }
+    }
 #endif
+    if ((int)val >= 0) {
         uint64 res = (((uint64)current_time.tv_sec) * 1000000) +
             current_time.tv_usec;
         res += UTC_TO_EPOCH_SECONDS * 1000000;
@@ -2503,6 +2528,7 @@ void
 os_thread_under_dynamo(dcontext_t *dcontext)
 {
     os_swap_context(dcontext, false/*to dr*/, DR_STATE_GO_NATIVE);
+    signal_swap_mask(dcontext, false/*to dr*/);
     start_itimer(dcontext);
 }
 
@@ -2510,16 +2536,25 @@ void
 os_thread_not_under_dynamo(dcontext_t *dcontext)
 {
     stop_itimer(dcontext);
+    signal_swap_mask(dcontext, true/*to app*/);
     os_swap_context(dcontext, true/*to app*/, DR_STATE_GO_NATIVE);
 }
 
 void
-os_process_under_dynamorio(dcontext_t *dcontext)
+os_process_under_dynamorio_initiate(dcontext_t *dcontext)
 {
     LOG(GLOBAL, LOG_THREADS, 1, "process now under DR\n");
     /* We only support regular process-wide signal handlers for delayed takeover. */
-    signal_reinstate_handlers(dcontext);
+    /* i#2161: we ignore alarm signals during the attach process to avoid races. */
+    signal_reinstate_handlers(dcontext, true/*ignore alarm*/);
     hook_vsyscall(dcontext, false);
+}
+
+void
+os_process_under_dynamorio_complete(dcontext_t *dcontext)
+{
+    /* i#2161: only now do we un-ignore alarm signals. */
+    signal_reinstate_alarm_handlers(dcontext);
 }
 
 void
@@ -3265,7 +3300,7 @@ os_thread_yield()
 #endif
 }
 
-static bool
+bool
 thread_signal(process_id_t pid, thread_id_t tid, int signum)
 {
 #ifdef MACOS
@@ -3563,6 +3598,12 @@ client_thread_run(void)
         get_thread_id());
     /* We stored the func and args in particular clone record fields */
     func = (void (*)(void *param)) signal_thread_inherit(dcontext, crec);
+    /* signal_thread_inherit() no longer sets up handlers or masks: we have to
+     * explicitly do that.
+     */
+    signal_reinstate_handlers(dcontext, false/*alarm too*/);
+    signal_swap_mask(dcontext, false/*to DR*/);
+
     void *arg = (void *) get_clone_record_app_xsp(crec);
     LOG(THREAD, LOG_ALL, 1, "func="PFX", arg="PFX"\n", func, arg);
 
@@ -4548,51 +4589,7 @@ safe_read(const void *base, size_t size, void *out_buf)
 bool
 safe_write_ex(void *base, size_t size, const void *in_buf, size_t *bytes_written)
 {
-    uint prot;
-    byte *region_base;
-    size_t region_size;
-    dcontext_t *dcontext = get_thread_private_dcontext();
-    bool res = false;
-    if (bytes_written != NULL)
-        *bytes_written = 0;
-
-    if (dcontext != NULL) {
-        TRY_EXCEPT(dcontext, {
-            /* We abort on the 1st fault, just like safe_read */
-            memcpy(base, in_buf, size);
-            res = true;
-        } , { /* EXCEPT */
-            /* nothing: res is already false */
-        });
-    } else {
-        /* this is subject to races, but should only happen at init/attach when
-         * there should only be one live thread.
-         */
-        /* on x86 must be readable to be writable so start with that */
-        if (is_readable_without_exception(base, size) &&
-            get_memory_info_from_os(base, &region_base, &region_size, &prot) &&
-            TEST(MEMPROT_WRITE, prot)) {
-            size_t bytes_checked = region_size - ((byte *)base - region_base);
-            while (bytes_checked < size) {
-                if (!get_memory_info_from_os(region_base + region_size, &region_base,
-                                             &region_size, &prot) ||
-                    !TEST(MEMPROT_WRITE, prot))
-                    return false;
-                bytes_checked += region_size;
-            }
-        } else {
-            return false;
-        }
-        /* ok, checks passed do the copy, FIXME - because of races this isn't safe! */
-        memcpy(base, in_buf, size);
-        res = true;
-    }
-
-    if (res) {
-        if (bytes_written != NULL)
-            *bytes_written = size;
-    }
-    return res;
+    return safe_write_try_except(base, size, in_buf, bytes_written);
 }
 
 /* is_readable_without_exception checks to see that all bytes with addresses
@@ -9800,6 +9797,7 @@ os_thread_take_over(priv_mcontext_t *mc, kernel_sigset_t *sigset)
         ASSERT(dcontext != NULL);
     }
     signal_set_mask(dcontext, sigset);
+    signal_swap_mask(dcontext, true/*to app*/);
     dynamo_thread_under_dynamo(dcontext);
     dc_mc = get_mcontext(dcontext);
     *dc_mc = *mc;

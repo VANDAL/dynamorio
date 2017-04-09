@@ -46,7 +46,6 @@
 
 #include "codec.h"
 
-#define ENCFAIL (uint)0 /* a value that is not a valid instruction */
 
 /* Decode immediate argument of bitwise operations.
  * Returns zero if the encoding is invalid.
@@ -431,15 +430,21 @@ decode_opnd_adr_page(int scale, uint enc, byte *pc, OUT opnd_t *opnd)
 }
 
 static bool
-encode_opnd_adr_page(int scale, byte *pc, opnd_t opnd, OUT uint *enc_out)
+encode_opnd_adr_page(int scale, byte *pc, opnd_t opnd, OUT uint *enc_out,
+                     instr_t *instr)
 {
-    void *addr;
+    ptr_int_t offset;
     uint bits;
-    if (!opnd_is_rel_addr(opnd))
+    if (opnd_is_rel_addr(opnd)) {
+        offset = (ptr_int_t)opnd_get_addr(opnd) -
+             (ptr_int_t)((ptr_uint_t)pc >> scale << scale);
+    } else if (opnd_is_instr(opnd)) {
+        offset = (ptr_int_t)
+            ((byte *)opnd_get_instr(opnd)->note - (byte *)instr->note);
+    } else
         return false;
-    addr = opnd_get_addr(opnd);
-    if (!try_encode_int(&bits, 21, scale,
-                        (ptr_int_t)addr - (ptr_int_t)((ptr_uint_t)pc >> scale << scale)))
+
+    if (!try_encode_int(&bits, 21, scale, offset))
         return false;
     *enc_out = (bits & 3) << 29 | (bits & 0x1ffffc) << 3;
     return true;
@@ -846,9 +851,10 @@ decode_opnd_adr(uint enc, int opcode, byte *pc, OUT opnd_t *opnd)
 }
 
 static inline bool
-encode_opnd_adr(uint enc, int opcode, byte *pc, opnd_t opnd, OUT uint *enc_out)
+encode_opnd_adr(uint enc, int opcode, byte *pc, opnd_t opnd, OUT uint *enc_out,
+                instr_t *instr)
 {
-    return encode_opnd_adr_page(0, pc, opnd, enc_out);
+    return encode_opnd_adr_page(0, pc, opnd, enc_out, instr);
 }
 
 /* adrp: operand of ADRP */
@@ -860,9 +866,10 @@ decode_opnd_adrp(uint enc, int opcode, byte *pc, OUT opnd_t *opnd)
 }
 
 static inline bool
-encode_opnd_adrp(uint enc, int opcode, byte *pc, opnd_t opnd, OUT uint *enc_out)
+encode_opnd_adrp(uint enc, int opcode, byte *pc, opnd_t opnd, OUT uint *enc_out,
+                 instr_t *instr)
 {
-    return encode_opnd_adr_page(12, pc, opnd, enc_out);
+    return encode_opnd_adr_page(12, pc, opnd, enc_out, instr);
 }
 
 /* b0: B register at bit position 0 */
@@ -2592,7 +2599,5 @@ uint encode_common(byte *pc, instr_t *i)
         ASSERT(instr_num_srcs(i) >= 1 && opnd_is_immed_int(instr_get_src(i, 0)));
         return opnd_get_immed_int(instr_get_src(i, 0));
     }
-    /* We were unable to encode this instruction. */
-    ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
     return enc;
 }

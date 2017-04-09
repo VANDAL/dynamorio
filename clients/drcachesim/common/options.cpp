@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2015-2016 Google, Inc.  All rights reserved.
+ * Copyright (c) 2015-2017 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -167,8 +167,9 @@ droption_t<std::string> op_TLB_replace_policy
 
 droption_t<std::string> op_simulator_type
 (DROPTION_SCOPE_FRONTEND, "simulator_type", CPU_CACHE,
- "Simulator type", "Specifies the type of the simulator. "
- "Supported types: " CPU_CACHE", " TLB".");
+ "Simulator type (" CPU_CACHE", " TLB", " REUSE_DIST", or " HISTOGRAM").",
+ "Specifies the type of the simulator. "
+ "Supported types: " CPU_CACHE", " TLB", " REUSE_DIST", or " HISTOGRAM".");
 
 droption_t<unsigned int> op_verbose
 (DROPTION_SCOPE_ALL, "verbose", 0, 0, 64, "Verbosity level",
@@ -216,14 +217,32 @@ droption_t<bytesize_t> op_sim_refs
  "The simulated references come after the skipped and warmup references, "
  "and the references following the simulated ones are dropped.");
 
+// XXX: if we separate histogram + reuse_distance we should move this with them.
 droption_t<unsigned int> op_report_top
 (DROPTION_SCOPE_FRONTEND, "report_top", 10,
  "Number of top results to be reported",
  "Specifies the number of top results to be reported.");
 
+// XXX: if we separate histogram + reuse_distance we should move these with them.
 droption_t<unsigned int> op_reuse_distance_threshold
 (DROPTION_SCOPE_FRONTEND, "reuse_distance_threshold", 100,
  "The reuse distance threshold for reporting the distant repeated references.",
  "Specifies the reuse distance threshold for reporting the distant repeated references. "
  "A reference is a distant repeated reference if the distance to the previous reference"
  " on the same cache line exceeds the threshold.");
+droption_t<bool> op_reuse_distance_histogram
+(DROPTION_SCOPE_FRONTEND, "reuse_distance_histogram", false,
+ "Print the entire reuse distance histogram.",
+ "By default only the mean, median, and standard deviation of the reuse distances "
+ "are reported.  This option prints out the full histogram of reuse distances.");
+droption_t<unsigned int> op_reuse_skip_dist
+(DROPTION_SCOPE_FRONTEND, "reuse_skip_dist", 500,
+ "For performance tuning: distance between skip nodes.",
+ "Specifies the distance between nodes in the skip list.  For optimal performance, "
+ "set this to a value close to the estimated average reuse distance of the dataset.");
+droption_t<bool> op_reuse_verify_skip
+(DROPTION_SCOPE_FRONTEND, "reuse_verify_skip", false,
+ "Use full list walks to verify the skip list results.",
+ "Verifies every skip list-calculated reuse distance with a full list walk. "
+ "This incurs significant additional overhead.  This option is only available "
+ "in debug builds.");

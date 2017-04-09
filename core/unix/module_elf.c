@@ -1,5 +1,5 @@
 /* *******************************************************************************
- * Copyright (c) 2012-2016 Google, Inc.  All rights reserved.
+ * Copyright (c) 2012-2017 Google, Inc.  All rights reserved.
  * Copyright (c) 2011 Massachusetts Institute of Technology  All rights reserved.
  * Copyright (c) 2008-2010 VMware, Inc.  All rights reserved.
  * *******************************************************************************/
@@ -210,14 +210,17 @@ is_elf_so_header_common(app_pc base, size_t size, bool memory)
          * i.e. 32/64-bit libraries.
          * We check again in privload_map_and_relocate() in loader for nice
          * error message.
+         * Xref i#1345 for supporting mixed libs, which makes more sense for
+         * standalone mode tools like those using drsyms (i#1532) or
+         * dr_map_executable_file, but we just don't support that yet until we
+         * remove our hardcoded type defines in module_elf.h.
          */
-        if (INTERNAL_OPTION(private_loader) &&
-            ((elf_header.e_version != 1) ||
-             (memory && elf_header.e_ehsize != sizeof(ELF_HEADER_TYPE)) ||
-             (memory && elf_header.e_machine != IF_X86_ELSE(IF_X64_ELSE(EM_X86_64,
-                                                                        EM_386),
-                                                            IF_X64_ELSE(EM_AARCH64,
-                                                                        EM_ARM)))))
+        if ((elf_header.e_version != 1) ||
+            (memory && elf_header.e_ehsize != sizeof(ELF_HEADER_TYPE)) ||
+            (memory && elf_header.e_machine != IF_X86_ELSE(IF_X64_ELSE(EM_X86_64,
+                                                                       EM_386),
+                                                           IF_X64_ELSE(EM_AARCH64,
+                                                                       EM_ARM))))
             return false;
 #endif
         /* FIXME - should we add any of these to the check? For real
@@ -879,7 +882,9 @@ elf_hash_lookup(const char   *name,
             ASSERT(false && "malformed ELF symbol entry");
             continue;
         }
-        /* Keep this consistent with symbol_is_import. */
+        /* Keep this consistent with symbol_is_import()  at this file and
+         * drsym_obj_symbol_offs() at ext/drsyms/drsyms_elf.c
+         */
         if (sym->st_value == 0 && ELF_ST_TYPE(sym->st_info) != STT_TLS)
             continue; /* no value */
         if (elf_sym_matches(sym, strtab, name, is_indirect_code))
@@ -1537,7 +1542,8 @@ symbol_iterator_stop(elf_symbol_iterator_t *iter)
 static bool
 symbol_is_import(ELF_SYM_TYPE *sym)
 {
-    /* Keep this consistent with elf_hash_lookup.
+    /* Keep this consistent with elf_hash_lookup() at this file and
+     * drsym_obj_symbol_offs() at ext/drsyms/drsyms_elf.c.
      * With some older ARM and AArch64 tool chains we have st_shndx == STN_UNDEF
      * with a non-zero st_value pointing at the PLT. See i#2008.
      */

@@ -5,8 +5,8 @@ create dir .*
 create dir .*
 open file .*
 open file .*
-0: writing [0-9]+ bytes .*
 pre-DR start
+0: writing [0-9]+ bytes .*
 1: writing [0-9]+ bytes .*
 restore the write file function
 pre-DR detach
@@ -15,6 +15,7 @@ close file .*
 close file .*
 processing .*
 all done
+Cache simulation results:
 Core #0 \(1 thread\(s\)\)
   L1I stats:
     Hits:                         *[0-9,\.]*.....

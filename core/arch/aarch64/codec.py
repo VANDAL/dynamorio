@@ -124,6 +124,14 @@ def generate_decoder(patterns, opndsgen, opndtypes):
     c.append('}')
     return '\n'.join(c) + '\n'
 
+
+def maybe_instr(opnd):
+    if opnd in ('adr', 'adrp'):
+        return ', instr'
+    else:
+        return ''
+
+
 def generate_encoder(patterns, opndsgen, opndtypes):
     c = []
     for name in sorted(opndsgen):
@@ -144,11 +152,11 @@ def generate_encoder(patterns, opndsgen, opndtypes):
             tests = (['instr_num_dsts(instr) == %d && instr_num_srcs(instr) == %d' %
                       (len(dsts), len(srcs))] +
                      ['encode_opnd_%s(enc & 0x%08x, opcode, '
-                      'pc, instr_get_dst(instr, %d), &dst%d)' %
-                      (dsts[i], f | opndtypes[dsts[i]], i, i) for i in range(len(dsts))] +
+                      'pc, instr_get_dst(instr, %d), &dst%d%s)' %
+                      (dsts[i], f | opndtypes[dsts[i]], i, i, maybe_instr(dsts[i])) for i in range(len(dsts))] +
                      ['encode_opnd_%s(enc & 0x%08x, opcode, '
-                      'pc, instr_get_src(instr, %d), &src%d)' %
-                      (srcs[i], f | opndtypes[srcs[i]], i, i) for i in range(len(srcs))])
+                      'pc, instr_get_src(instr, %d), &src%d%s)' %
+                      (srcs[i], f | opndtypes[srcs[i]], i, i, maybe_instr(srcs[i])) for i in range(len(srcs))])
             tests2 = (['dst%d == (enc & 0x%08x)' % (i, opndtypes[dsts[i]])
                        for i in range(len(dsts))] +
                       ['src%d == (enc & 0x%08x)' % (i, opndtypes[srcs[i]])
@@ -183,8 +191,8 @@ def generate_encoder(patterns, opndsgen, opndtypes):
         pat1 = pats.pop()
         for p in pats:
             (b, m, mn, f) = p
-            c.append('        if ((enc = encode_opnds%s(pc, instr, 0x%08x)) != ENCFAIL)' %
-                     (f, b))
+            c.append('        enc = encode_opnds%s(pc, instr, 0x%08x);' % (f, b))
+            c.append('        if (enc != ENCFAIL)')
             c.append('            return enc;')
         (b, m, mn, f) = pat1
         c.append('        return encode_opnds%s(pc, instr, 0x%08x);' % (f, b))
@@ -224,6 +232,7 @@ def generate_opcodes(patterns):
         c.append(t + '/**< AArch64 %s opcode.*/' % mn)
         i += 1
     c += ['',
+          '    OP_ldstex, /* single-entry single-exit block with exclusive load/store */',
           '    OP_xx, /* placeholder for undecoded instructions */',
           '',
           '    OP_AFTER_LAST,',
@@ -264,7 +273,8 @@ def generate_opcode_names(patterns):
     for mn in sorted(mns):
         c.append('/*%4d */ "%s",' % (i, mn))
         i += 1
-    c += ['          "xx",',
+    c += ['          "ldstex",',
+          '          "xx",',
           '};',
           '',
           '#endif /* OPCODE_NAMES_H */']

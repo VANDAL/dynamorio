@@ -160,6 +160,17 @@ instr_encode_arch(dcontext_t *dcontext, instr_t *instr, byte *copy_pc, byte *fin
     CLIENT_ASSERT(instr_operands_valid(instr), "instr_encode error: operands invalid");
 
     *(uint *)copy_pc = encode_common(final_pc, instr);
+    if (*(uint *)copy_pc == ENCFAIL) {
+        /* We were unable to encode this instruction. */
+        IF_DEBUG({
+            char disas_instr[MAX_INSTR_DIS_SZ];
+            instr_disassemble_to_buffer(dcontext, instr, disas_instr,
+                                        MAX_INSTR_DIS_SZ);
+            SYSLOG_INTERNAL_ERROR("Internal Error: Failed to encode instruction:"
+                                  " '%s'\n", disas_instr);
+        });
+        ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
+    }
     return copy_pc + 4;
 }
 
@@ -168,7 +179,8 @@ copy_and_re_relativize_raw_instr(dcontext_t *dcontext, instr_t *instr,
                                  byte *dst_pc, byte *final_pc)
 {
     /* FIXME i#1569: re-relativizing is NYI */
-    ASSERT(instr_raw_bits_valid(instr));
+    /* OP_ldstex is always relocatable. */
+    ASSERT(instr_raw_bits_valid(instr) || instr_get_opcode(instr) == OP_ldstex);
     memcpy(dst_pc, instr->bytes, instr->length);
     return dst_pc + instr->length;
 }

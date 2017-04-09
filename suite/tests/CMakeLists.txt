@@ -814,11 +814,11 @@ function(add_api_exe test source use_decoder use_static_DR)
           -E touch "${drcopy_stamp}"
         COMMAND ${CMAKE_COMMAND} ARGS
           -E copy "${MAIN_LIBRARY_OUTPUT_DIRECTORY}/dynamorio.dll"
-          "${CMAKE_CURRENT_BINARY_DIR}/dynamorio.dll"
+          "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/dynamorio.dll"
         # We copy drsyms.dll too, for api.symtest
         COMMAND ${CMAKE_COMMAND} ARGS
           -E copy "${PROJECT_BINARY_DIR}/ext/${INSTALL_LIB}/drsyms.dll"
-          "${CMAKE_CURRENT_BINARY_DIR}/drsyms.dll"
+          "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/drsyms.dll"
         VERBATIM)
       add_custom_target(drcopy DEPENDS "${drcopy_stamp}")
       set(created_drcopy_target ON PARENT_SCOPE)
@@ -1298,6 +1298,8 @@ function(torun test key source native standalone_dr dr_ops exe_ops added_out)
       -D precmd=${${key}_precmd}
       -D cmd=${cmd_with_at}
       -D postcmd=${${key}_postcmd}
+      -D postcmd2=${${key}_postcmd2}
+      -D postcmd3=${${key}_postcmd3}
       -D cmp=${CMAKE_CURRENT_BINARY_DIR}/${expectbase}.expect
       -P ${runcmp_script})
     # No support for regex here (ctest can't handle large regex)
@@ -1688,6 +1690,7 @@ if (CLIENT_INTERFACE)
     tobuild_ci(client.syscall client-interface/syscall.c "" "-no_follow_children" "")
     tobuild_ci(client.count-bbs client-interface/count-bbs.c "" "" "")
   endif (X86)
+  tobuild_ci(client.cleancallparams client-interface/cleancallparams.c "" "" "")
   tobuild_ci(client.app_inscount client-interface/app_inscount.c "" "" "")
   if (NOT WIN32) # FIXME i#1717: add Windows client C++ EH support
     if (NOT ANDROID) # XXX i#1874: get working on Android
@@ -2439,9 +2442,23 @@ if (CLIENT_INTERFACE)
       set(tool.reuse_basedir
         "${PROJECT_SOURCE_DIR}/clients/drcachesim/tests")
 
+      if (X86 AND X64) # We only bother with a sample trace for x86_64.
+        # We test with a fixed trace file so we can test exact numeric results.
+        set(small_trace_file
+          "${PROJECT_SOURCE_DIR}/clients/drcachesim/tests/drmemtrace.small.x64.trace")
+        torunonly_ci(tool.reuse.offline ${ci_shared_app} drcachesim
+          "reuse_offline.c" # for expect basename
+          "-infile ${small_trace_file} -simulator_type reuse_distance -reuse_distance_histogram" "" "")
+        set(tool.reuse.offline_toolname "drcachesim")
+        set(tool.reuse.offline_basedir "${PROJECT_SOURCE_DIR}/clients/drcachesim/tests")
+      endif ()
+
       # Test offline traces.
       # XXX: we could exclude the pipe files and build the offline trace
       # support by itself for Android.
+      get_target_path_for_execution(drcachesim_path drcachesim)
+      prefix_cmd_if_necessary(drcachesim_path ON ${drcachesim_path})
+
       macro (torunonly_drcacheoff testname exetgt)
         torunonly_ci(tool.drcacheoff.${testname} ${exetgt} drcachesim
           "offline-${testname}.c" # for templatex basename
@@ -2450,8 +2467,6 @@ if (CLIENT_INTERFACE)
         set(tool.drcacheoff.${testname}_basedir
           "${PROJECT_SOURCE_DIR}/clients/drcachesim/tests")
         set(tool.drcacheoff.${testname}_rawtemp ON) # no preprocessor
-        get_target_path_for_execution(drcachesim_path drcachesim)
-        prefix_cmd_if_necessary(drcachesim_path ON ${drcachesim_path})
         set(tool.drcacheoff.${testname}_runcmp
           "${CMAKE_CURRENT_SOURCE_DIR}/runmulti.cmake")
         set(tool.drcacheoff.${testname}_precmd
@@ -2474,6 +2489,9 @@ if (CLIENT_INTERFACE)
         torunonly_drcacheoff(burst_replace tool.drcacheoff.burst_replace)
         set(tool.drcacheoff.burst_replace_nodr ON)
 
+        torunonly_drcacheoff(burst_replaceall tool.drcacheoff.burst_replaceall)
+        set(tool.drcacheoff.burst_replaceall_nodr ON)
+
         if (UNIX)
           # FIXME i#2040: this hits static client issues on Windows
           torunonly_drcacheoff(burst_threads tool.drcacheoff.burst_threads)
@@ -2485,6 +2503,53 @@ if (CLIENT_INTERFACE)
         endif ()
       endif ()
 
+      # Test the standalone histogram tool.
+      # ${ci_shared_app} is already used for an offline test, and we're deleting a
+      # dir with that name, so we run common.eflags to avoid having to serialize.
+      set(histo_app common.${control_flags})
+      torunonly_ci(tool.histogram.offline ${histo_app} drcachesim
+        "histogram-offline.c" "-offline" "" "")
+      set(tool.histogram.offline_toolname "drcachesim")
+      set(tool.histogram.offline_basedir
+        "${PROJECT_SOURCE_DIR}/clients/drcachesim/tests")
+      set(tool.histogram.offline_rawtemp ON) # no preprocessor
+      get_target_path_for_execution(histo_path drmemtrace_histogram)
+      prefix_cmd_if_necessary(histo_path ON ${histo_path})
+      set(tool.histogram.offline_runcmp
+        "${CMAKE_CURRENT_SOURCE_DIR}/runmulti.cmake")
+      set(tool.histogram.offline_precmd
+        "foreach@${CMAKE_COMMAND}@-E@remove_directory@drmemtrace.${histo_app}.*.dir")
+      set(tool.histogram.offline_postcmd
+        "${drcachesim_path}@-indir@drmemtrace.${histo_app}.*.dir")
+      set(tool.histogram.offline_postcmd2
+        "${histo_path}@-trace@drmemtrace.${histo_app}.*.dir/drmemtrace.trace")
+
+      find_program(GZIP gzip "gzip compression utility")
+      if (UNIX AND ZLIB_FOUND AND GZIP)
+        # Test the gzip file reader.  It does not work with -indir.
+        # We're using the same app name, so we serialize to avoid file conflicts:
+        set(tool.histogram.gzip_depends tool.histogram.offline)
+        torunonly_ci(tool.histogram.gzip ${histo_app} drcachesim
+          "histogram-offline.c" "-offline" "" "")
+        set(tool.histogram.gzip_toolname "drcachesim")
+        set(tool.histogram.gzip_basedir
+          "${PROJECT_SOURCE_DIR}/clients/drcachesim/tests")
+        set(tool.histogram.gzip_rawtemp ON) # no preprocessor
+        get_target_path_for_execution(histo_path drmemtrace_histogram)
+        prefix_cmd_if_necessary(histo_path ON ${histo_path})
+        set(tool.histogram.gzip_runcmp
+          "${CMAKE_CURRENT_SOURCE_DIR}/runmulti.cmake")
+        set(tool.histogram.gzip_precmd
+          "foreach@${CMAKE_COMMAND}@-E@remove_directory@drmemtrace.${histo_app}.*.dir")
+        set(tool.histogram.gzip_postcmd
+          "${drcachesim_path}@-indir@drmemtrace.${histo_app}.*.dir")
+        set(tool.histogram.gzip_postcmd2
+          "${GZIP}@drmemtrace.${histo_app}.*.dir/drmemtrace.trace")
+        set(tool.histogram.gzip_postcmd3
+          "${histo_path}@-trace@drmemtrace.${histo_app}.*.dir/drmemtrace.trace.gz")
+      elseif (UNIX)
+        message(STATUS "gzip or zlib not found: disabling tool.histogram.gzip test")
+      endif ()
     endif (NOT ANDROID)
 
     if (X86) # i#1732: no ARM/AArch64 support for drcpusim yet
@@ -2916,6 +2981,10 @@ else (UNIX)
   tobuild(win32.winapc win32/winapc.c)
   tobuild(win32.winthread win32/winthread.c)
   tobuild(security-win32.apc-shellcode security-win32/apc-shellcode.c)
+  tobuild(security-win32.except-int2d security-win32/except-int2d.c)
+  tobuild(security-win32.except-guard security-win32/except-guard.c)
+  tobuild(security-win32.thread-setcontext security-win32/thread-setcontext.c)
+
   tobuild(win32.threadterm win32/threadterm.c)
 
   tobuild_dll(win32.earlythread win32/earlythread.c "")
@@ -2947,7 +3016,6 @@ else (UNIX)
     # we match exe addresses in output so no ASLR
     append_link_flags(security-win32.except-execution "/dynamicbase:no")
 
-    tobuild(security-win32.except-guard security-win32/except-guard.c)
     tobuild(security-win32.except-thread security-win32/except-thread.c)
     tobuild(security-win32.gbop-test security-win32/gbop-test.c)
 
