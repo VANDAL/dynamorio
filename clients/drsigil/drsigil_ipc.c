@@ -159,8 +159,8 @@ void set_shared_memory_buffer(per_thread_t *tcxt)
     {
         /* Write thread swap event */
         SglSyncEv ev = {
-            .type = SGLPRIM_SYNC_SWAP,
-            .id   = tcxt->thread_id
+            .type    = SGLPRIM_SYNC_SWAP,
+            .data[0] = tcxt->thread_id
         };
         tcxt->buffer.events_ptr->tag  = SGL_SYNC_TAG;
         tcxt->buffer.events_ptr->sync = ev;
