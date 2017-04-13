@@ -9,16 +9,17 @@
 
 #define STRINGIFY(x) #x
 
-/* Initialize all possible IPC channels (some will not be used) */
 #define MAX_IPC_CHANNELS 256 //fudge number
 ipc_channel_t IPC[MAX_IPC_CHANNELS];
+/* Initialize all possible IPC channels (some will not be used) */
 
 
-/* Tell Sigil2 that the active buffer, on the given IPC channel,
- * is full and ready to be consumed */
 static inline void
 notify_full_buffer(ipc_channel_t *channel)
 {
+    /* Tell Sigil2 that the active buffer, on the given IPC channel,
+     * is full and ready to be consumed */
+
     dr_write_file(channel->full_fifo,
                   &channel->shmem_buf_idx, sizeof(channel->shmem_buf_idx));
 
@@ -27,10 +28,11 @@ notify_full_buffer(ipc_channel_t *channel)
 }
 
 
-/* Increment to the next buffer and try to acquire it for writing */
 static inline EventBuffer*
 get_next_buffer(ipc_channel_t *channel)
 {
+    /* Increment to the next buffer and try to acquire it for writing */
+
     /* Circular buffer, must be power of 2 */
     channel->shmem_buf_idx = (channel->shmem_buf_idx+1) & (SIGIL2_DBI_BUFFERS-1);
 
@@ -42,18 +44,19 @@ get_next_buffer(ipc_channel_t *channel)
         channel->empty_buf_idx[channel->shmem_buf_idx] = true;
     }
 
-    channel->shared_mem->buf[channel->shmem_buf_idx].events_used = 0;
-    channel->shared_mem->buf[channel->shmem_buf_idx].pool_used   = 0;
-    return channel->shared_mem->buf + channel->shmem_buf_idx;
+    channel->shared_mem->eventBuffers[channel->shmem_buf_idx].used = 0;
+    channel->shared_mem->nameBuffers[channel->shmem_buf_idx].used = 0;
+    return channel->shared_mem->eventBuffers + channel->shmem_buf_idx;
 }
 
 
 static inline EventBuffer*
 get_buffer(ipc_channel_t *channel, uint required)
 {
-    /* check if enough space is available in the current buffer */
-    EventBuffer *current_shmem_buffer = channel->shared_mem->buf + channel->shmem_buf_idx;
-    uint available = SIGIL2_MAX_EVENTS - current_shmem_buffer->events_used;
+    /* Check if enough space is available in the current buffer */
+    EventBuffer *current_shmem_buffer = channel->shared_mem->eventBuffers +
+                                        channel->shmem_buf_idx;
+    uint available = SIGIL2_EVENTS_BUFFER_SIZE - current_shmem_buffer->used;
 
     if(available < required)
     {
@@ -67,10 +70,10 @@ get_buffer(ipc_channel_t *channel, uint required)
 
 static inline int
 futex(int *uaddr, int futex_op, int val,
-	  const struct timespec *timeout, int *uaddr2, int val3)
+      const struct timespec *timeout, int *uaddr2, int val3)
 {
-	return syscall(SYS_futex, uaddr, futex_op, val,
-				   timeout, uaddr2, val3);
+    return syscall(SYS_futex, uaddr, futex_op, val,
+                   timeout, uaddr2, val3);
 }
 
 static inline void
@@ -80,9 +83,9 @@ ordered_lock(ipc_channel_t *channel)
     uint turn = __sync_fetch_and_add(&channel->ord.counter, 1);
     while(turn != channel->ord.next)
     {
-		/* TODO Timeout in case the next-in-line arrived AFTER
-		 * the unlock. Would that even cause a problem? */
-		futex(&channel->ord.seq, FUTEX_WAIT_PRIVATE, seq, NULL, NULL, 0);
+        /* TODO Timeout in case the next-in-line arrived AFTER
+         * the unlock. Would that even cause a problem? */
+        futex(&channel->ord.seq, FUTEX_WAIT_PRIVATE, seq, NULL, NULL, 0);
         seq = channel->ord.seq;
     }
 }
@@ -90,9 +93,9 @@ ordered_lock(ipc_channel_t *channel)
 static inline void
 ordered_unlock(volatile ipc_channel_t *channel)
 {
-	++channel->ord.next;
-	++channel->ord.seq;
-	futex((int*)&channel->ord.seq, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
+    ++channel->ord.next;
+    ++channel->ord.seq;
+    futex((int*)&channel->ord.seq, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
 }
 
 
@@ -121,32 +124,33 @@ get_locked_channel(per_thread_t *tcxt)
     return channel;
 }
 
-static inline BufferedSglEv*
+static inline SglEvVariant*
 set_shared_memory_buffer_helper(per_thread_t *tcxt, ipc_channel_t *channel)
 {
 
-    EventBuffer *current_shmem_buffer = channel->shared_mem->buf + channel->shmem_buf_idx;
-    size_t available = SIGIL2_MAX_EVENTS - current_shmem_buffer->events_used;
+    EventBuffer *current_shmem_buffer = channel->shared_mem->eventBuffers +
+                                        channel->shmem_buf_idx;
+    size_t available = SIGIL2_EVENTS_BUFFER_SIZE - current_shmem_buffer->used;
 
     if (available < MIN_DR_PER_THREAD_BUFFER_EVENTS)
     {
         notify_full_buffer(channel); // First inform Sigil2 the current buffer can be read
         current_shmem_buffer = get_next_buffer(channel); // Then get a new buffer for writing
-        available = SIGIL2_MAX_EVENTS - current_shmem_buffer->events_used;
+        available = SIGIL2_EVENTS_BUFFER_SIZE - current_shmem_buffer->used;
     }
 
-    size_t events = (available >= DR_PER_THREAD_BUFFER_EVENTS) ? 
+    size_t events = (available >= DR_PER_THREAD_BUFFER_EVENTS) ?
         DR_PER_THREAD_BUFFER_EVENTS : available;
 
-    tcxt->buffer.events_ptr = current_shmem_buffer->events + current_shmem_buffer->events_used;
+    tcxt->buffer.events_ptr = current_shmem_buffer->events + current_shmem_buffer->used;
     tcxt->buffer.events_end = tcxt->buffer.events_ptr + events;
-    tcxt->buffer.events_used = &current_shmem_buffer->events_used;
+    tcxt->buffer.events_used = &current_shmem_buffer->used;
 }
 
 
 
 /////////////////////////////////////////////////////////////////////
-// IPC interface 
+// IPC interface
 /////////////////////////////////////////////////////////////////////
 
 void set_shared_memory_buffer(per_thread_t *tcxt)
@@ -214,24 +218,24 @@ init_IPC(int idx, const char *path)
     path_len = strlen(path);
     pad_len = 4; /* extra space for '/', 2x'-', '\0' */
     shmem_len     = (path_len + pad_len +
-                     sizeof(SIGIL2_DBI_SHMEM_NAME) +
+                     sizeof(SIGIL2_DBI_SHMEM_BASENAME) +
                      sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
     fullfifo_len  = (path_len + pad_len +
-                     sizeof(SIGIL2_DBI_FULLFIFO_NAME) +
+                     sizeof(SIGIL2_DBI_FULLFIFO_BASENAME) +
                      sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
     emptyfifo_len = (path_len + pad_len +
-                     sizeof(SIGIL2_DBI_EMPTYFIFO_NAME) +
+                     sizeof(SIGIL2_DBI_EMPTYFIFO_BASENAME) +
                      sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
 
     /* set up names of IPC files */
     char shmem_name[shmem_len];
-    sprintf(shmem_name, "%s/%s-%d", path, SIGIL2_DBI_SHMEM_NAME, idx);
+    sprintf(shmem_name, "%s/%s-%d", path, SIGIL2_DBI_SHMEM_BASENAME, idx);
 
     char fullfifo_name[fullfifo_len];
-    sprintf(fullfifo_name, "%s/%s-%d", path, SIGIL2_DBI_FULLFIFO_NAME, idx);
+    sprintf(fullfifo_name, "%s/%s-%d", path, SIGIL2_DBI_FULLFIFO_BASENAME, idx);
 
     char emptyfifo_name[emptyfifo_len];
-    sprintf(emptyfifo_name, "%s/%s-%d", path, SIGIL2_DBI_EMPTYFIFO_NAME, idx);
+    sprintf(emptyfifo_name, "%s/%s-%d", path, SIGIL2_DBI_EMPTYFIFO_BASENAME, idx);
 
     /* Wait for Sigil2 to create pipes
      * Timeout is arbitrary */
@@ -244,7 +248,10 @@ init_IPC(int idx, const char *path)
             break;
 
         if(i == max_tests)
-            dr_printf("%s\n", emptyfifo_name), dr_abort_w_msg("DrSigil timed out waiting for sigil2 fifos");
+        {
+            dr_printf("%s\n", emptyfifo_name);
+            dr_abort_w_msg("DrSigil timed out waiting for sigil2 fifos");
+        }
 
         struct timespec ts;
         ts.tv_sec  = 0;

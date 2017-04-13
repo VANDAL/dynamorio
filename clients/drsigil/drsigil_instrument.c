@@ -17,7 +17,7 @@ clean_call_mem(per_thread_t *tcxt, ptr_uint_t address, int size, int type)
         if(tcxt->buffer.events_ptr == tcxt->buffer.events_end)
             set_shared_memory_buffer(tcxt);
 
-        BufferedSglEv *event_slot = tcxt->buffer.events_ptr;
+        SglEvVariant *event_slot = tcxt->buffer.events_ptr;
         event_slot->tag = SGL_MEM_TAG;
         event_slot->mem.type = type;
         event_slot->mem.begin_addr = address;
@@ -70,7 +70,7 @@ clean_call_instr(per_thread_t *tcxt, ptr_int_t pc)
         if(tcxt->buffer.events_ptr == tcxt->buffer.events_end)
             set_shared_memory_buffer(tcxt);
 
-        BufferedSglEv *event_slot = tcxt->buffer.events_ptr;
+        SglEvVariant *event_slot = tcxt->buffer.events_ptr;
         event_slot->tag = SGL_CXT_TAG;
         event_slot->cxt.type = SGLPRIM_CXT_INSTR;
         event_slot->cxt.id = pc;
@@ -126,7 +126,7 @@ clean_call_comp(per_thread_t *tcxt, CompCostType type)
         if(tcxt->buffer.events_ptr == tcxt->buffer.events_end)
             set_shared_memory_buffer(tcxt);
 
-        BufferedSglEv *event_slot = tcxt->buffer.events_ptr;
+        SglEvVariant *event_slot = tcxt->buffer.events_ptr;
         event_slot->tag = SGL_COMP_TAG;
         event_slot->comp.type = type;
         //comp.arity = TODO
