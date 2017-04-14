@@ -34,7 +34,7 @@ get_next_buffer(ipc_channel_t *channel)
     /* Increment to the next buffer and try to acquire it for writing */
 
     /* Circular buffer, must be power of 2 */
-    channel->shmem_buf_idx = (channel->shmem_buf_idx+1) & (SIGIL2_DBI_BUFFERS-1);
+    channel->shmem_buf_idx = (channel->shmem_buf_idx+1) & (SIGIL2_IPC_BUFFERS-1);
 
     /* Sigil2 tells us when it's finished with a shared memory buffer */
     if(channel->empty_buf_idx[channel->shmem_buf_idx] == false)
@@ -218,24 +218,24 @@ init_IPC(int idx, const char *path)
     path_len = strlen(path);
     pad_len = 4; /* extra space for '/', 2x'-', '\0' */
     shmem_len     = (path_len + pad_len +
-                     sizeof(SIGIL2_DBI_SHMEM_BASENAME) +
+                     sizeof(SIGIL2_IPC_SHMEM_BASENAME) +
                      sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
     fullfifo_len  = (path_len + pad_len +
-                     sizeof(SIGIL2_DBI_FULLFIFO_BASENAME) +
+                     sizeof(SIGIL2_IPC_FULLFIFO_BASENAME) +
                      sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
     emptyfifo_len = (path_len + pad_len +
-                     sizeof(SIGIL2_DBI_EMPTYFIFO_BASENAME) +
+                     sizeof(SIGIL2_IPC_EMPTYFIFO_BASENAME) +
                      sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
 
     /* set up names of IPC files */
     char shmem_name[shmem_len];
-    sprintf(shmem_name, "%s/%s-%d", path, SIGIL2_DBI_SHMEM_BASENAME, idx);
+    sprintf(shmem_name, "%s/%s-%d", path, SIGIL2_IPC_SHMEM_BASENAME, idx);
 
     char fullfifo_name[fullfifo_len];
-    sprintf(fullfifo_name, "%s/%s-%d", path, SIGIL2_DBI_FULLFIFO_BASENAME, idx);
+    sprintf(fullfifo_name, "%s/%s-%d", path, SIGIL2_IPC_FULLFIFO_BASENAME, idx);
 
     char emptyfifo_name[emptyfifo_len];
-    sprintf(emptyfifo_name, "%s/%s-%d", path, SIGIL2_DBI_EMPTYFIFO_BASENAME, idx);
+    sprintf(emptyfifo_name, "%s/%s-%d", path, SIGIL2_IPC_EMPTYFIFO_BASENAME, idx);
 
     /* Wait for Sigil2 to create pipes
      * Timeout is arbitrary */
@@ -291,7 +291,7 @@ void
 terminate_IPC(int idx)
 {
     /* send terminate sequence */
-    uint finished = SIGIL2_DBI_FINISHED;
+    uint finished = SIGIL2_IPC_FINISHED;
     uint last_buffer = IPC[idx].shmem_buf_idx;
     if(dr_write_file(IPC[idx].full_fifo, &last_buffer, sizeof(last_buffer)) != sizeof(last_buffer) ||
        dr_write_file(IPC[idx].full_fifo, &finished,    sizeof(finished))    != sizeof(finished))

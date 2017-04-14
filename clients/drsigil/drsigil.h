@@ -2,7 +2,7 @@
 #define DRSIGIL_H
 
 #include "dr_api.h"
-#include "Frontends/DbiIpcCommon.h"
+#include "Frontends/CommonShmemIPC.h"
 
 /////////////////////////////////////////////////////////////////////
 //                          IPC Management                         //
@@ -62,7 +62,7 @@ struct _ipc_channel_t
     /* The current buffer being filled in shared memory
      * Must wrap around back to 0 at 'SIGIL2_DBI_BUFFERS' */
 
-    bool empty_buf_idx[SIGIL2_DBI_BUFFERS];
+    bool empty_buf_idx[SIGIL2_IPC_BUFFERS];
     /* Corresponds to each buffer that is available for writing */
 
     uint last_active_tid;
