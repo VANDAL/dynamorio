@@ -191,6 +191,36 @@ void force_thread_flush(per_thread_t *tcxt)
     }
 }
 
+static file_t
+open_sigil2_fifo(const char *path, int flags)
+{
+    /* Wait for Sigil2 to create pipes
+     * Timeout is empirical */
+    uint max_tests = 10;
+    for(uint i=0; i<max_tests+1; ++i)
+    {
+        if(dr_file_exists(path))
+            break;
+
+        if(i == max_tests)
+        {
+            dr_printf("%s\n", path);
+            dr_abort_w_msg("DrSigil timed out waiting for sigil2 fifos");
+        }
+
+        struct timespec ts;
+        ts.tv_sec  = 0;
+        ts.tv_nsec = 200000000L;
+        nanosleep(&ts, NULL);
+    }
+
+    file_t f = dr_open_file(path, flags);
+    if(f == INVALID_FILE)
+        dr_abort_w_msg("error opening empty fifo");
+
+    return f;
+}
+
 void
 init_IPC(int idx, const char *path)
 {
@@ -237,38 +267,13 @@ init_IPC(int idx, const char *path)
     char emptyfifo_name[emptyfifo_len];
     sprintf(emptyfifo_name, "%s/%s-%d", path, SIGIL2_IPC_EMPTYFIFO_BASENAME, idx);
 
-    /* Wait for Sigil2 to create pipes
-     * Timeout is arbitrary */
-    uint max_tests = 5;
-    for(uint i=0; i<max_tests+1; ++i)
-    {
-        if(dr_file_exists(emptyfifo_name) == true &&
-           dr_file_exists(fullfifo_name)  == true &&
-           dr_file_exists(shmem_name)     == true)
-            break;
-
-        if(i == max_tests)
-        {
-            dr_printf("%s\n", emptyfifo_name);
-            dr_abort_w_msg("DrSigil timed out waiting for sigil2 fifos");
-        }
-
-        struct timespec ts;
-        ts.tv_sec  = 0;
-        ts.tv_nsec = 200000000L;
-        nanosleep(&ts, NULL);
-    }
 
     /* initialize read/write pipes */
-    channel->empty_fifo = dr_open_file(emptyfifo_name, DR_FILE_READ);
-    if(channel->empty_fifo == INVALID_FILE)
-        dr_abort_w_msg("error opening empty fifo");
+    channel->empty_fifo = open_sigil2_fifo(emptyfifo_name, DR_FILE_READ);
+    channel->full_fifo = open_sigil2_fifo(fullfifo_name, DR_FILE_WRITE_ONLY);
 
-    channel->full_fifo = dr_open_file(fullfifo_name, DR_FILE_WRITE_ONLY);
-    if(channel->full_fifo == INVALID_FILE)
-        dr_abort_w_msg("error opening full fifo");
-
-    /* shared memory MUST be initialized by Sigil2 before the fifos are created */
+    /* no need to timeout on file because shared memory MUST be initialized
+     * by Sigil2 before the fifos are created */
     file_t map_file = dr_open_file(shmem_name, DR_FILE_READ|DR_FILE_WRITE_APPEND);
     if(map_file == INVALID_FILE)
         dr_abort_w_msg("error opening shared memory file");
