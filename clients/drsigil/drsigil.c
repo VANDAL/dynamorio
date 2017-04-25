@@ -153,9 +153,12 @@ event_thread_init(void *drcontext)
     per_thread_t *init = dr_thread_alloc(drcontext, sizeof(per_thread_t));
     per_thread_buffer_t *init_buffer = &init->buffer;
 
+    /* TODO(someday) are we sure we want to activate
+     * this thread right away? */
     init->active = true;
     init->thread_id = __sync_add_and_fetch(&num_threads,1);
     init->has_channel_lock = false;
+    init->is_blocked = false;
     init_buffer->events_ptr = NULL;
     init_buffer->events_end = NULL;
     init_buffer->events_used = NULL;

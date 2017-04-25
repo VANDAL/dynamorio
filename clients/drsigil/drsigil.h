@@ -4,30 +4,32 @@
 #include "dr_api.h"
 #include "Frontends/CommonShmemIPC.h"
 
+
 /////////////////////////////////////////////////////////////////////
 //                          IPC Management                         //
 /////////////////////////////////////////////////////////////////////
 
-typedef struct _ordered_mutex_t ordered_mutex_t;
-struct _ordered_mutex_t
+typedef struct _ticket_node_t ticket_node_t;
+struct _ticket_node_t
+{
+    void *dr_event;
+    ticket_node_t *next;
+    uint thread_id;
+    volatile bool waiting;
+};
+
+typedef struct _ticket_queue_t ticket_queue_t;
+struct _ticket_queue_t
 {
     /* Manage threads waiting to write to the shared memory
      *
      * Each thread will write directly to shared memory to
      * avoid the memory usage+bandwidth overhead of writing
-     * to a local buffer and then copying to shared memory.
-     *
-     * MDL20170222 To help with order of the threads trying to
-     * lock shared memory, we have to use futex syscalls
-     * because DynamoRIO does not provide conditional waits/broadcasts yet.
-     *
-     * XXX The method used for enforcing order is quite hacky and naive.
-     * It suffers from the 'thundering herd' problem.
-     * The moral of the story: parallel programming is hard >.< */
+     * to a local buffer and then copying to shared memory. */
 
-    uint counter;
-    uint next;
-    int  seq;
+    ticket_node_t *head;
+    ticket_node_t *tail;
+    volatile bool locked;
 };
 
 
@@ -43,7 +45,8 @@ struct _ipc_channel_t
      * id (thread id % number of channels). That is, if there is one channel,
      * then all threads vie over that channel. */
 
-    ordered_mutex_t ord;
+    void *queue_lock;
+    ticket_queue_t ticket_queue;
     /* Multiple threads can write via this IPC channel.
      * Only allow one at a time. */
 
@@ -108,6 +111,15 @@ struct _per_thread_t
      * This typically depends on specific a given function has been reached */
 
     bool has_channel_lock;
+    /* Is allowed to use the ipc channel */
+
+    bool is_blocked;
+    /* Mostly used for debugging.
+     * Is about to wait on a application-side lock.
+     * We must take care to ensure this thread never
+     * has the channel lock while blocked, otherwise
+     * we end up with an application-side deadlock */
+
     per_thread_buffer_t buffer;
 };
 

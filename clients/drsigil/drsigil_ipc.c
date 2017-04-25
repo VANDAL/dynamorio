@@ -13,6 +13,12 @@
 ipc_channel_t IPC[MAX_IPC_CHANNELS];
 /* Initialize all possible IPC channels (some will not be used) */
 
+#ifdef SGLDEBUG
+#define SGL_DEBUG(...) dr_printf(__VA_ARGS__)
+#else
+#define SGL_DEBUG(...)
+#endif
+
 
 static inline void
 notify_full_buffer(ipc_channel_t *channel)
@@ -60,42 +66,96 @@ get_buffer(ipc_channel_t *channel, uint required)
 
     if(available < required)
     {
-        notify_full_buffer(channel); // First inform Sigil2 the current buffer can be read
-        current_shmem_buffer = get_next_buffer(channel); // Then get a new buffer for writing
+        /* First inform Sigil2 the current buffer can be read */
+        notify_full_buffer(channel);
+
+        /* Then get a new buffer for writing */
+        current_shmem_buffer = get_next_buffer(channel);
     }
 
     return current_shmem_buffer;
 }
 
 
-static inline int
-futex(int *uaddr, int futex_op, int val,
-      const struct timespec *timeout, int *uaddr2, int val3)
-{
-    return syscall(SYS_futex, uaddr, futex_op, val,
-                   timeout, uaddr2, val3);
-}
-
 static inline void
-ordered_lock(ipc_channel_t *channel)
+ordered_lock(ipc_channel_t *channel, uint tid)
 {
-    int seq = channel->ord.seq;
-    uint turn = __sync_fetch_and_add(&channel->ord.counter, 1);
-    while(turn != channel->ord.next)
+    dr_mutex_lock(channel->queue_lock);
+
+    ticket_queue_t *q = &channel->ticket_queue;
+    if (q->locked)
     {
-        /* TODO Timeout in case the next-in-line arrived AFTER
-         * the unlock. Would that even cause a problem? */
-        futex(&channel->ord.seq, FUTEX_WAIT_PRIVATE, seq, NULL, NULL, 0);
-        seq = channel->ord.seq;
+        DR_ASSERT(q->head != NULL && q->tail != NULL);
+
+        ticket_node_t *node = malloc(sizeof(ticket_node_t));
+        node->next = NULL;
+        node->dr_event = dr_event_create();
+        node->waiting = true;
+        node->thread_id = tid;
+
+        DR_ASSERT(q->tail->next == NULL);
+        q->tail = q->tail->next = node;
+
+        SGL_DEBUG("Sleeping Thread :%d\n", tid);
+        dr_mutex_unlock(channel->queue_lock);
+
+        /* MDL20170425 TODO(soonish)
+         * how likely is it that we'll miss a wakeup here? */
+        while (node->waiting)
+            dr_event_wait(node->dr_event);
+
+        SGL_DEBUG("Wakened  Thread :%d\n", tid);
+    }
+    else
+    {
+        ticket_node_t *node = malloc(sizeof(ticket_node_t));
+        node->next = NULL;
+        node->dr_event = NULL;
+        node->waiting = false;
+        node->thread_id = tid;
+
+        DR_ASSERT(q->head == NULL && q->tail == NULL);
+        q->head = q->tail = node;
+        q->locked = true;
+
+        dr_mutex_unlock(channel->queue_lock);
     }
 }
 
+
 static inline void
-ordered_unlock(volatile ipc_channel_t *channel)
+ordered_unlock(ipc_channel_t *channel)
 {
-    ++channel->ord.next;
-    ++channel->ord.seq;
-    futex((int*)&channel->ord.seq, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
+    dr_mutex_lock(channel->queue_lock);
+
+    ticket_queue_t *q = &channel->ticket_queue;
+    DR_ASSERT(q->locked);
+
+    /* Calling thread MUST be the owner of the
+     * head of the queue.
+     *
+     * Pop the head of the queue and signal
+     * the new head. If there are no waiting
+     * threads, then just set the queue to unlocked */
+
+    if (q->head == q->tail)
+    {
+        free(q->head);
+        q->head = NULL;
+        q->tail = NULL;
+        q->locked = false;
+    }
+    else
+    {
+        ticket_node_t *this_head = q->head;
+        q->head = this_head->next;
+        free(this_head);
+        SGL_DEBUG("Waking   Thread :%d\n", q->head->thread_id);
+        q->head->waiting = false;
+        dr_event_signal(q->head->dr_event);
+    }
+
+    dr_mutex_unlock(channel->queue_lock);
 }
 
 
@@ -111,52 +171,35 @@ get_locked_channel(per_thread_t *tcxt)
     uint channel_idx = tcxt->thread_id % clo.frontend_threads;
     ipc_channel_t *channel = &IPC[channel_idx];
 
-    /* requeue self to lock channel */
+    /* Requeue self to lock channel,
+     * to avoid starvation of other threads */
     if(tcxt->has_channel_lock)
-    {
         ordered_unlock(channel);
-    }
 
     /* Lock the shared memory channel */
-    ordered_lock(channel);
+    ordered_lock(channel, tcxt->thread_id);
     tcxt->has_channel_lock = true;
 
     return channel;
 }
 
+
 static inline SglEvVariant*
 set_shared_memory_buffer_helper(per_thread_t *tcxt, ipc_channel_t *channel)
 {
-
-    EventBuffer *current_shmem_buffer = channel->shared_mem->eventBuffers +
-                                        channel->shmem_buf_idx;
-    size_t available = SIGIL2_EVENTS_BUFFER_SIZE - current_shmem_buffer->used;
-
-    if (available < MIN_DR_PER_THREAD_BUFFER_EVENTS)
-    {
-        notify_full_buffer(channel); // First inform Sigil2 the current buffer can be read
-        current_shmem_buffer = get_next_buffer(channel); // Then get a new buffer for writing
-        available = SIGIL2_EVENTS_BUFFER_SIZE - current_shmem_buffer->used;
-    }
-
-    size_t events = (available >= DR_PER_THREAD_BUFFER_EVENTS) ?
-        DR_PER_THREAD_BUFFER_EVENTS : available;
-
+    EventBuffer *current_shmem_buffer = get_buffer(channel, MIN_DR_PER_THREAD_BUFFER_EVENTS);
     tcxt->buffer.events_ptr = current_shmem_buffer->events + current_shmem_buffer->used;
-    tcxt->buffer.events_end = tcxt->buffer.events_ptr + events;
+    tcxt->buffer.events_end = tcxt->buffer.events_ptr + MIN_DR_PER_THREAD_BUFFER_EVENTS;
     tcxt->buffer.events_used = &current_shmem_buffer->used;
 }
-
 
 
 /////////////////////////////////////////////////////////////////////
 // IPC interface
 /////////////////////////////////////////////////////////////////////
-
 void set_shared_memory_buffer(per_thread_t *tcxt)
 {
     ipc_channel_t *channel = get_locked_channel(tcxt);
-
     set_shared_memory_buffer_helper(tcxt, channel);
 
     if(channel->last_active_tid != tcxt->thread_id)
@@ -185,8 +228,8 @@ void force_thread_flush(per_thread_t *tcxt)
         get_next_buffer(channel);
         ordered_unlock(channel);
         tcxt->has_channel_lock = false;
-        tcxt->buffer.events_ptr = 0;
-        tcxt->buffer.events_end = 0;
+        tcxt->buffer.events_ptr = NULL;
+        tcxt->buffer.events_end = NULL;
         tcxt->buffer.events_used = NULL;
     }
 }
@@ -230,9 +273,9 @@ init_IPC(int idx, const char *path)
     ipc_channel_t *channel = &IPC[idx];
 
     /* Initialize channel state */
-    channel->ord.counter   = 0;
-    channel->ord.next      = 0;
-    channel->ord.seq       = 0;
+    channel->queue_lock        = dr_mutex_create();
+    channel->ticket_queue.head = NULL;
+    channel->ticket_queue.tail = NULL;
     channel->shared_mem    = NULL;
     channel->full_fifo     = -1;
     channel->empty_fifo    = -1;
@@ -295,17 +338,20 @@ init_IPC(int idx, const char *path)
 void
 terminate_IPC(int idx)
 {
+    ipc_channel_t *channel = &IPC[idx];
+
     /* send terminate sequence */
     uint finished = SIGIL2_IPC_FINISHED;
-    uint last_buffer = IPC[idx].shmem_buf_idx;
-    if(dr_write_file(IPC[idx].full_fifo, &last_buffer, sizeof(last_buffer)) != sizeof(last_buffer) ||
-       dr_write_file(IPC[idx].full_fifo, &finished,    sizeof(finished))    != sizeof(finished))
+    uint last_buffer = channel->shmem_buf_idx;
+    if(dr_write_file(channel->full_fifo, &last_buffer, sizeof(last_buffer)) != sizeof(last_buffer) ||
+       dr_write_file(channel->full_fifo, &finished,    sizeof(finished))    != sizeof(finished))
         dr_abort_w_msg("error writing finish sequence sigil2 fifos");
 
     /* wait for sigil2 to disconnect */
-    while(dr_read_file(IPC[idx].empty_fifo, &finished, sizeof(finished)) > 0);
+    while(dr_read_file(channel->empty_fifo, &finished, sizeof(finished)) > 0);
 
-    dr_close_file(IPC[idx].empty_fifo);
-    dr_close_file(IPC[idx].full_fifo);
-    dr_unmap_file(IPC[idx].shared_mem, sizeof(Sigil2DBISharedData));
+    dr_close_file(channel->empty_fifo);
+    dr_close_file(channel->full_fifo);
+    dr_unmap_file(channel->shared_mem, sizeof(Sigil2DBISharedData));
+    dr_mutex_destroy(channel->queue_lock);
 }
