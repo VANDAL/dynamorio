@@ -237,6 +237,7 @@ wrap_pre_pthread_spin_lock(void *wrapcxt, OUT void **user_data)
 {
     per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
                                              tls_idx);
+    (void)tcxt;
     LOG_SYNC_ENTER(pthread_spin_lock, tcxt->thread_id);
     //size_t sz = (size_t) drwrap_get_arg(wrapcxt, IF_WINDOWS_ELSE(2,0));
 }
@@ -245,6 +246,7 @@ wrap_post_pthread_spin_lock(void *wrapcxt, void *user_data)
 {
     per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
                                              tls_idx);
+    (void)tcxt;
     LOG_SYNC_EXIT(pthread_spin_lock, tcxt->thread_id);
 }
 
@@ -257,6 +259,7 @@ wrap_pre_pthread_spin_unlock(void *wrapcxt, OUT void **user_data)
 {
     per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
                                              tls_idx);
+    (void)tcxt;
     LOG_SYNC_ENTER(pthread_spin_unlock, tcxt->thread_id);
     //size_t sz = (size_t) drwrap_get_arg(wrapcxt, IF_WINDOWS_ELSE(2,0));
 }
@@ -265,6 +268,7 @@ wrap_post_pthread_spin_unlock(void *wrapcxt, void *user_data)
 {
     per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
                                              tls_idx);
+    (void)tcxt;
     LOG_SYNC_EXIT(pthread_spin_unlock, tcxt->thread_id);
 }
 

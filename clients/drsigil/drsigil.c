@@ -276,7 +276,7 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
     /* Initialize IPC */
     /* There are 'frontend_threads' number of channels */
     for(int i=0; i<clo.frontend_threads; ++i)
-        init_IPC(i, clo.ipc_dir);
+        init_IPC(i, clo.ipc_dir, clo.standalone);
 
     /* initialize thread local resources */
     tls_idx = drmgr_register_tls_field();

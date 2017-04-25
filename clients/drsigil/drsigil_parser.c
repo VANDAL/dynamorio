@@ -4,6 +4,7 @@
 
 static struct option long_options[] =
 {
+    {"standalone",           no_argument,       0, 's'},
     {"num-frontend-threads", required_argument, 0, 'n'},
     {"ipc-dir",              required_argument, 0, 'd'},
     {"start-func",           required_argument, 0, 'b'},
@@ -15,12 +16,11 @@ void
 parse(int argc, char *argv[], command_line_options *clo)
 {
     /* init args */
-
     int c = 0;
     int option_index = 0;
-    *clo = (command_line_options){0, NULL, NULL, NULL};
+    *clo = (command_line_options){NULL, NULL, NULL, 0, false};
 
-    while( (c = getopt_long(argc, argv, "n:d:t:", long_options, &option_index)) > 0 )
+    while( (c = getopt_long(argc, argv, "sn:d:t:", long_options, &option_index)) > 0 )
     {
         switch(c)
         {
@@ -36,12 +36,16 @@ parse(int argc, char *argv[], command_line_options *clo)
         case 'e':
             clo->stop_func = optarg;
             break;
+        case 's':
+            clo->standalone = true;
+            break;
         default:
             break;
         }
     }
 
-    if(clo->ipc_dir == NULL || clo->frontend_threads == 0)
+    if(clo->frontend_threads == 0 ||
+	   (clo->standalone == false && clo->ipc_dir == NULL))
     {
         dr_abort_w_msg("Parsing Error"); //TODO cleanup
     }

@@ -26,8 +26,9 @@ notify_full_buffer(ipc_channel_t *channel)
     /* Tell Sigil2 that the active buffer, on the given IPC channel,
      * is full and ready to be consumed */
 
-    dr_write_file(channel->full_fifo,
-                  &channel->shmem_buf_idx, sizeof(channel->shmem_buf_idx));
+    if (channel->standalone == false)
+        dr_write_file(channel->full_fifo,
+                      &channel->shmem_buf_idx, sizeof(channel->shmem_buf_idx));
 
     /* Flag the shared memory buffer as used (by Sigil2) */
     channel->empty_buf_idx[channel->shmem_buf_idx] = false;
@@ -45,8 +46,9 @@ get_next_buffer(ipc_channel_t *channel)
     /* Sigil2 tells us when it's finished with a shared memory buffer */
     if(channel->empty_buf_idx[channel->shmem_buf_idx] == false)
     {
-        dr_read_file(channel->empty_fifo,
-                     &channel->shmem_buf_idx, sizeof(channel->shmem_buf_idx));
+        if (channel->standalone == false)
+            dr_read_file(channel->empty_fifo,
+                         &channel->shmem_buf_idx, sizeof(channel->shmem_buf_idx));
         channel->empty_buf_idx[channel->shmem_buf_idx] = true;
     }
 
@@ -184,7 +186,7 @@ get_locked_channel(per_thread_t *tcxt)
 }
 
 
-static inline SglEvVariant*
+static inline void
 set_shared_memory_buffer_helper(per_thread_t *tcxt, ipc_channel_t *channel)
 {
     EventBuffer *current_shmem_buffer = get_buffer(channel, MIN_DR_PER_THREAD_BUFFER_EVENTS);
@@ -265,12 +267,14 @@ open_sigil2_fifo(const char *path, int flags)
 }
 
 void
-init_IPC(int idx, const char *path)
+init_IPC(int idx, const char *path, bool standalone)
 {
     DR_ASSERT(idx < MAX_IPC_CHANNELS);
 
     int path_len, pad_len, shmem_len, fullfifo_len, emptyfifo_len;
     ipc_channel_t *channel = &IPC[idx];
+
+    channel->standalone = standalone;
 
     /* Initialize channel state */
     channel->queue_lock        = dr_mutex_create();
@@ -287,50 +291,58 @@ init_IPC(int idx, const char *path)
     channel->last_active_tid = 0;
     channel->initialized     = false;
 
-    /* Connect to Sigil2 */
-    path_len = strlen(path);
-    pad_len = 4; /* extra space for '/', 2x'-', '\0' */
-    shmem_len     = (path_len + pad_len +
-                     sizeof(SIGIL2_IPC_SHMEM_BASENAME) +
-                     sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
-    fullfifo_len  = (path_len + pad_len +
-                     sizeof(SIGIL2_IPC_FULLFIFO_BASENAME) +
-                     sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
-    emptyfifo_len = (path_len + pad_len +
-                     sizeof(SIGIL2_IPC_EMPTYFIFO_BASENAME) +
-                     sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
+    if (standalone)
+    {
+        /* mimic shared memory writes */
+        channel->shared_mem = dr_global_alloc(sizeof(Sigil2DBISharedData));
+    }
+    else
+    {
+        /* Connect to Sigil2 */
+        path_len = strlen(path);
+        pad_len = 4; /* extra space for '/', 2x'-', '\0' */
+        shmem_len     = (path_len + pad_len +
+                         sizeof(SIGIL2_IPC_SHMEM_BASENAME) +
+                         sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
+        fullfifo_len  = (path_len + pad_len +
+                         sizeof(SIGIL2_IPC_FULLFIFO_BASENAME) +
+                         sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
+        emptyfifo_len = (path_len + pad_len +
+                         sizeof(SIGIL2_IPC_EMPTYFIFO_BASENAME) +
+                         sizeof(STRINGIFY(MAX_IPC_CHANNELS)));
 
-    /* set up names of IPC files */
-    char shmem_name[shmem_len];
-    sprintf(shmem_name, "%s/%s-%d", path, SIGIL2_IPC_SHMEM_BASENAME, idx);
+        /* set up names of IPC files */
+        char shmem_name[shmem_len];
+        sprintf(shmem_name, "%s/%s-%d", path, SIGIL2_IPC_SHMEM_BASENAME, idx);
 
-    char fullfifo_name[fullfifo_len];
-    sprintf(fullfifo_name, "%s/%s-%d", path, SIGIL2_IPC_FULLFIFO_BASENAME, idx);
+        char fullfifo_name[fullfifo_len];
+        sprintf(fullfifo_name, "%s/%s-%d", path, SIGIL2_IPC_FULLFIFO_BASENAME, idx);
 
-    char emptyfifo_name[emptyfifo_len];
-    sprintf(emptyfifo_name, "%s/%s-%d", path, SIGIL2_IPC_EMPTYFIFO_BASENAME, idx);
-
-
-    /* initialize read/write pipes */
-    channel->empty_fifo = open_sigil2_fifo(emptyfifo_name, DR_FILE_READ);
-    channel->full_fifo = open_sigil2_fifo(fullfifo_name, DR_FILE_WRITE_ONLY);
-
-    /* no need to timeout on file because shared memory MUST be initialized
-     * by Sigil2 before the fifos are created */
-    file_t map_file = dr_open_file(shmem_name, DR_FILE_READ|DR_FILE_WRITE_APPEND);
-    if(map_file == INVALID_FILE)
-        dr_abort_w_msg("error opening shared memory file");
-
-    size_t mapped_size = sizeof(Sigil2DBISharedData);
-    channel->shared_mem = dr_map_file(map_file, &mapped_size,
-                                      0, 0, /* assume this is not honored */
-                                      DR_MEMPROT_READ|DR_MEMPROT_WRITE, 0);
+        char emptyfifo_name[emptyfifo_len];
+        sprintf(emptyfifo_name, "%s/%s-%d", path, SIGIL2_IPC_EMPTYFIFO_BASENAME, idx);
 
 
-    if(mapped_size != sizeof(Sigil2DBISharedData) || channel->shared_mem == NULL)
-        dr_abort_w_msg("error mapping shared memory");
+        /* initialize read/write pipes */
+        channel->empty_fifo = open_sigil2_fifo(emptyfifo_name, DR_FILE_READ);
+        channel->full_fifo = open_sigil2_fifo(fullfifo_name, DR_FILE_WRITE_ONLY);
 
-    dr_close_file(map_file);
+        /* no need to timeout on file because shared memory MUST be initialized
+         * by Sigil2 before the fifos are created */
+        file_t map_file = dr_open_file(shmem_name, DR_FILE_READ|DR_FILE_WRITE_APPEND);
+        if(map_file == INVALID_FILE)
+            dr_abort_w_msg("error opening shared memory file");
+
+        size_t mapped_size = sizeof(Sigil2DBISharedData);
+        channel->shared_mem = dr_map_file(map_file, &mapped_size,
+                                          0, 0, /* assume this is not honored */
+                                          DR_MEMPROT_READ|DR_MEMPROT_WRITE, 0);
+
+        if(mapped_size != sizeof(Sigil2DBISharedData) || channel->shared_mem == NULL)
+            dr_abort_w_msg("error mapping shared memory");
+
+        dr_close_file(map_file);
+    }
+
     channel->initialized = true;
 }
 
@@ -340,18 +352,26 @@ terminate_IPC(int idx)
 {
     ipc_channel_t *channel = &IPC[idx];
 
-    /* send terminate sequence */
-    uint finished = SIGIL2_IPC_FINISHED;
-    uint last_buffer = channel->shmem_buf_idx;
-    if(dr_write_file(channel->full_fifo, &last_buffer, sizeof(last_buffer)) != sizeof(last_buffer) ||
-       dr_write_file(channel->full_fifo, &finished,    sizeof(finished))    != sizeof(finished))
-        dr_abort_w_msg("error writing finish sequence sigil2 fifos");
+    if (channel->standalone)
+    {
+        dr_global_free(channel->shared_mem, sizeof(Sigil2DBISharedData));
+    }
+    else
+    {
+        /* send terminate sequence */
+        uint finished = SIGIL2_IPC_FINISHED;
+        uint last_buffer = channel->shmem_buf_idx;
+        if(dr_write_file(channel->full_fifo, &last_buffer, sizeof(last_buffer)) != sizeof(last_buffer) ||
+           dr_write_file(channel->full_fifo, &finished,    sizeof(finished))    != sizeof(finished))
+            dr_abort_w_msg("error writing finish sequence sigil2 fifos");
 
-    /* wait for sigil2 to disconnect */
-    while(dr_read_file(channel->empty_fifo, &finished, sizeof(finished)) > 0);
+        /* wait for sigil2 to disconnect */
+        while(dr_read_file(channel->empty_fifo, &finished, sizeof(finished)) > 0);
 
-    dr_close_file(channel->empty_fifo);
-    dr_close_file(channel->full_fifo);
-    dr_unmap_file(channel->shared_mem, sizeof(Sigil2DBISharedData));
+        dr_close_file(channel->empty_fifo);
+        dr_close_file(channel->full_fifo);
+        dr_unmap_file(channel->shared_mem, sizeof(Sigil2DBISharedData));
+    }
+
     dr_mutex_destroy(channel->queue_lock);
 }
