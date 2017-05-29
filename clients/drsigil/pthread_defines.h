@@ -3,6 +3,8 @@
 
 #include "drsigil.h"
 #include "drmgr.h"
+#include "drwrap.h"
+#include "pthread.h"
 
 #define MAIN           "main"
 #define P_CREATE       "pthread_create"
@@ -26,9 +28,18 @@
 #endif
 
 static inline void
-set_sync_event(per_thread_t *tcxt, SyncType type)
+set_sync_event(per_thread_t *tcxt, SyncType type, SyncID data[const static 2])
 {
     tcxt->sync_ev->type = type;
+    tcxt->sync_ev->data[0] = data[0];
+    tcxt->sync_ev->data[1] = data[1];
+}
+static inline void
+send_sync_event(per_thread_t *tcxt)
+{
+    /* sets the raw TLS sync event pointer,
+     * letting instrumentation know to send the
+     * event to sigil */
     SGLSYNCEV_PTR(tcxt->seg_base) = tcxt->sync_ev;
 }
 
@@ -39,20 +50,17 @@ set_blocked_and_deactivate(per_thread_t *tcxt)
     tcxt->is_blocked = true;
     force_thread_flush(tcxt);
 }
-
 static inline void
 set_unblocked_and_reactivate(per_thread_t *tcxt)
 {
     ACTIVE(tcxt->seg_base) = true;
     tcxt->is_blocked = false;
 }
-
 static inline void
 deactivate(per_thread_t *tcxt)
 {
     ACTIVE(tcxt->seg_base) = false;
 }
-
 static inline void
 reactivate(per_thread_t *tcxt)
 {
@@ -65,19 +73,22 @@ reactivate(per_thread_t *tcxt)
 static void
 wrap_pre_pthread_create(void *wrapcxt, OUT void **user_data)
 {
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_ENTER(pthread_create, tcxt->thread_id);
     deactivate(tcxt);
+
+    /* TODO dereference the pthread_t? */
+    SyncID data[2] = {(uintptr_t)(pthread_t*)drwrap_get_arg(wrapcxt, 0), 0};
+    set_sync_event(tcxt, SGLPRIM_SYNC_CREATE, data);
 }
 static void
 wrap_post_pthread_create(void *wrapcxt, void *user_data)
 {
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_EXIT(pthread_create, tcxt->thread_id);
     reactivate(tcxt);
-    set_sync_event(tcxt, SGLPRIM_SYNC_CREATE);
+
+    send_sync_event(tcxt);
 }
 
 
@@ -87,19 +98,20 @@ wrap_post_pthread_create(void *wrapcxt, void *user_data)
 static void
 wrap_pre_pthread_join(void *wrapcxt, OUT void **user_data)
 {
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_ENTER(pthread_join, tcxt->thread_id);
     set_blocked_and_deactivate(tcxt);
+
+    SyncID data[2] = {(uintptr_t)(pthread_t*)drwrap_get_arg(wrapcxt, 0), 0};
+    set_sync_event(tcxt, SGLPRIM_SYNC_JOIN, data);
 }
 static void
 wrap_post_pthread_join(void *wrapcxt, void *user_data)
 {
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_EXIT(pthread_join, tcxt->thread_id);
     set_unblocked_and_reactivate(tcxt);
-    set_sync_event(tcxt, SGLPRIM_SYNC_JOIN);
+    send_sync_event(tcxt);
 }
 
 
@@ -113,15 +125,18 @@ wrap_pre_pthread_mutex_lock(void *wrapcxt, OUT void **user_data)
                                              tls_idx);
     LOG_SYNC_ENTER(pthread_mutex_lock, tcxt->thread_id);
     set_blocked_and_deactivate(tcxt);
+
+    SyncID data[2] = {(uintptr_t)(pthread_mutex_t*)drwrap_get_arg(wrapcxt, 0), 0};
+    set_sync_event(tcxt, SGLPRIM_SYNC_LOCK, data);
 }
 static void
 wrap_post_pthread_mutex_lock(void *wrapcxt, void *user_data)
 {
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_EXIT(pthread_mutex_lock, tcxt->thread_id);
     set_unblocked_and_reactivate(tcxt);
-    set_sync_event(tcxt, SGLPRIM_SYNC_LOCK);
+
+    send_sync_event(tcxt);
 }
 
 
@@ -131,19 +146,21 @@ wrap_post_pthread_mutex_lock(void *wrapcxt, void *user_data)
 static void
 wrap_pre_pthread_mutex_unlock(void *wrapcxt, OUT void **user_data)
 {
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_ENTER(pthread_mutex_unlock, tcxt->thread_id);
     deactivate(tcxt);
+
+    SyncID data[2] = {(uintptr_t)(pthread_mutex_t*)drwrap_get_arg(wrapcxt, 0), 0};
+    set_sync_event(tcxt, SGLPRIM_SYNC_UNLOCK, data);
 }
 static void
 wrap_post_pthread_mutex_unlock(void *wrapcxt, void *user_data)
 {
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_EXIT(pthread_mutex_unlock, tcxt->thread_id);
     reactivate(tcxt);
-    set_sync_event(tcxt, SGLPRIM_SYNC_UNLOCK);
+
+    send_sync_event(tcxt);
 }
 
 
@@ -153,21 +170,21 @@ wrap_post_pthread_mutex_unlock(void *wrapcxt, void *user_data)
 static void
 wrap_pre_pthread_barrier(void *wrapcxt, OUT void **user_data)
 {
-    //size_t sz = (size_t) drwrap_get_arg(wrapcxt, IF_WINDOWS_ELSE(2,0));
-
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_ENTER(pthread_barrier, tcxt->thread_id);
     set_blocked_and_deactivate(tcxt);
+
+    SyncID data[2] = {(uintptr_t)(pthread_barrier_t*)drwrap_get_arg(wrapcxt, 0), 0};
+    set_sync_event(tcxt, SGLPRIM_SYNC_BARRIER, data);
 }
 static void
 wrap_post_pthread_barrier(void *wrapcxt, void *user_data)
 {
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_EXIT(pthread_barrier, tcxt->thread_id);
     set_unblocked_and_reactivate(tcxt);
-    set_sync_event(tcxt, SGLPRIM_SYNC_BARRIER);
+
+    send_sync_event(tcxt);
 }
 
 
@@ -177,21 +194,22 @@ wrap_post_pthread_barrier(void *wrapcxt, void *user_data)
 static void
 wrap_pre_pthread_cond_wait(void *wrapcxt, OUT void **user_data)
 {
-    //size_t sz = (size_t) drwrap_get_arg(wrapcxt, IF_WINDOWS_ELSE(2,0));
-
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_ENTER(pthread_cond_wait, tcxt->thread_id);
     set_blocked_and_deactivate(tcxt);
+
+    SyncID data[2] = {(uintptr_t)(pthread_cond_t*)drwrap_get_arg(wrapcxt, 0),
+                      (uintptr_t)(pthread_mutex_t*)drwrap_get_arg(wrapcxt, 1)};
+    set_sync_event(tcxt, SGLPRIM_SYNC_CONDWAIT, data);
 }
 static void
 wrap_post_pthread_cond_wait(void *wrapcxt, void *user_data)
 {
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_EXIT(pthread_cond_wait, tcxt->thread_id);
     set_unblocked_and_reactivate(tcxt);
-    set_sync_event(tcxt, SGLPRIM_SYNC_CONDWAIT);
+
+    send_sync_event(tcxt);
 }
 
 
@@ -201,20 +219,21 @@ wrap_post_pthread_cond_wait(void *wrapcxt, void *user_data)
 static void
 wrap_pre_pthread_cond_sig(void *wrapcxt, OUT void **user_data)
 {
-    //size_t sz = (size_t) drwrap_get_arg(wrapcxt, IF_WINDOWS_ELSE(2,0));
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_ENTER(pthread_cond_sig, tcxt->thread_id);
     deactivate(tcxt);
+
+    SyncID data[2] = {(uintptr_t)(pthread_cond_t*)drwrap_get_arg(wrapcxt, 0), 0};
+    set_sync_event(tcxt, SGLPRIM_SYNC_CONDSIG, data);
 }
 static void
 wrap_post_pthread_cond_sig(void *wrapcxt, void *user_data)
 {
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_EXIT(pthread_cond_sig, tcxt->thread_id);
     reactivate(tcxt);
-    set_sync_event(tcxt, SGLPRIM_SYNC_CONDSIG);
+
+    send_sync_event(tcxt);
 }
 
 
@@ -224,19 +243,19 @@ wrap_post_pthread_cond_sig(void *wrapcxt, void *user_data)
 static void
 wrap_pre_pthread_spin_lock(void *wrapcxt, OUT void **user_data)
 {
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
-    (void)tcxt;
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_ENTER(pthread_spin_lock, tcxt->thread_id);
-    //size_t sz = (size_t) drwrap_get_arg(wrapcxt, IF_WINDOWS_ELSE(2,0));
+
+    SyncID data[2] = {(uintptr_t)(pthread_spinlock_t*)drwrap_get_arg(wrapcxt, 0), 0};
+    set_sync_event(tcxt, SGLPRIM_SYNC_SPINLOCK, data);
 }
 static void
 wrap_post_pthread_spin_lock(void *wrapcxt, void *user_data)
 {
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
-    (void)tcxt;
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_EXIT(pthread_spin_lock, tcxt->thread_id);
+
+    send_sync_event(tcxt);
 }
 
 
@@ -246,19 +265,19 @@ wrap_post_pthread_spin_lock(void *wrapcxt, void *user_data)
 static void
 wrap_pre_pthread_spin_unlock(void *wrapcxt, OUT void **user_data)
 {
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
-    (void)tcxt;
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_ENTER(pthread_spin_unlock, tcxt->thread_id);
-    //size_t sz = (size_t) drwrap_get_arg(wrapcxt, IF_WINDOWS_ELSE(2,0));
+
+    SyncID data[2] = {(uintptr_t)(pthread_spinlock_t*)drwrap_get_arg(wrapcxt, 0), 0};
+    set_sync_event(tcxt, SGLPRIM_SYNC_SPINUNLOCK, data);
 }
 static void
 wrap_post_pthread_spin_unlock(void *wrapcxt, void *user_data)
 {
-    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(),
-                                             tls_idx);
-    (void)tcxt;
+    per_thread_t *tcxt = drmgr_get_tls_field(dr_get_current_drcontext(), tls_idx);
     LOG_SYNC_EXIT(pthread_spin_unlock, tcxt->thread_id);
+
+    send_sync_event(tcxt);
 }
 
 #endif
