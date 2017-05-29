@@ -4,6 +4,18 @@
 #include "dr_api.h"
 #include "Frontends/CommonShmemIPC.h"
 
+#define DR_ABORT_MSG(msg) DR_ASSERT_MSG(false, msg)
+
+#define MINSERT instrlist_meta_preinsert
+
+#define RESERVE_REGISTER(reg) \
+    if (drreg_reserve_register(drcontext, ilist, where, NULL, &reg) != DRREG_SUCCESS) \
+        DR_ASSERT(false);
+#define UNRESERVE_REGISTER(reg) \
+    if (drreg_unreserve_register(drcontext, ilist, where, reg) != DRREG_SUCCESS) \
+        DR_ASSERT(false);
+
+
 
 /////////////////////////////////////////////////////////////////////
 //                          IPC Management                         //
@@ -18,8 +30,8 @@ struct _ticket_node_t
     volatile bool waiting;
 };
 
-typedef struct _ticket_queue_t ticket_queue_t;
-struct _ticket_queue_t
+
+typedef struct _ticket_queue_t
 {
     /* Manage threads waiting to write to the shared memory
      *
@@ -30,11 +42,10 @@ struct _ticket_queue_t
     ticket_node_t *head;
     ticket_node_t *tail;
     volatile bool locked;
-};
+} ticket_queue_t;
 
 
-typedef struct _ipc_channel_t ipc_channel_t;
-struct _ipc_channel_t
+typedef struct _ipc_channel_t
 {
     /* The shared memory channel between this DynamoRIO client application and
      * Sigil2. Multiple channels can exist to reduce contention on the channels;
@@ -77,24 +88,38 @@ struct _ipc_channel_t
     bool standalone;
     /* Will be TRUE if this channel was not initialized with Sigil2 IPC;
      * will 'fake' any IPC. */
-};
+} ipc_channel_t;
 
 /////////////////////////////////////////////////////////////////////
 //                           Thread Data                           //
 /////////////////////////////////////////////////////////////////////
 
-#define DR_PER_THREAD_BUFFER_EVENTS (1UL << 22)
-#define MIN_DR_PER_THREAD_BUFFER_EVENTS (1UL << 15)
-typedef struct _per_thread_buffer_t per_thread_buffer_t;
-struct _per_thread_buffer_t
+typedef struct _mem_ref_t
 {
-    SglEvVariant  *events_ptr;
-    SglEvVariant  *events_end;
-    size_t        *events_used;
-};
+    MemType type;
+    ushort size; // XXX big enough?
+    void *addr;
+} mem_ref_t;
 
-typedef struct _per_thread_t per_thread_t;
-struct _per_thread_t
+#define MAX_NUM_MEM_REFS 2048
+#define MEM_BUF_SIZE (sizeof(mem_ref_t) * MAX_NUM_MEM_REFS)
+/* we should not have more than this many memory references per basic block */
+
+typedef struct _instr_block_t
+{
+    instr_t *instr;
+    uint mem_ref_count;
+    uint comp_count;
+} instr_block_t;
+
+#define MAX_NUM_COMPS 1024
+#define COMP_BUF_SIZE (sizeof(SglCompEv) * MAX_NUM_COMPS)
+
+#define MAX_NUM_IBLOCKS 1024
+#define IBLOCK_BUF_SIZE (sizeof(instr_block_t) * MAX_NUM_IBLOCKS)
+/* we should not need more than this per basic block */
+
+typedef struct _per_thread_t
 {
     /* per-application-thread data
      *
@@ -110,10 +135,6 @@ struct _per_thread_t
     /* Unique ID
      * Sigil2 expects threads to start from '1' */
 
-    bool active;
-    /* Instrumentation is enabled/disabled for this thread.
-     * This typically depends on specific a given function has been reached */
-
     bool has_channel_lock;
     /* Is allowed to use the ipc channel */
 
@@ -124,9 +145,36 @@ struct _per_thread_t
      * has the channel lock while blocked, otherwise
      * we end up with an application-side deadlock */
 
-    per_thread_buffer_t buffer;
-};
+    mem_ref_t *memrefs;
+    /* Track memory references per event block.
+     * This is used as an optimization in the instrumentation implementation.
+     * A local buffer will hold all mem refs, and only at the end of each
+     * branching instruction, all sigil events will be written to shared memory
+     * (e.g. the mem refs, instructions, compute, synchronization, ...) */
 
+    SglCompEv *comps;
+    SglCompEv *current_iblock_comp;
+    /* Keep a local buffer of compute per event block.
+     * This just simplifies instrumentation */
+
+    SglSyncEv *sync_ev;
+    /* The latest sync event */
+
+    instr_block_t *iblocks;
+    uint iblock_count;
+    /* Each iblock holds sigil event data for a single instruction.
+     * The iblock buffer holds event data for a single event block */
+
+    uint event_block_events;
+    /* total sigil events for the current event block
+     * (single-entry, single-exit) */
+
+    byte *seg_base;
+    /* So we can access the raw TLS from client clean calls */
+
+} per_thread_t;
+
+#define MIN_DR_PER_THREAD_BUFFER_EVENTS (1UL << 20)
 
 volatile extern bool roi;
 /* Region-Of-Interest (ROI)
@@ -142,6 +190,57 @@ volatile extern bool roi;
 
 extern int tls_idx;
 /* thread-local storage for per_thread_t */
+
+enum
+{
+    MEMREF_TLS_OFFS_PERTHR_PTR = 0,
+    /* the client's TLS (from drmgr) */
+
+    MEMREF_TLS_OFFS_SGLEV_PTR,
+    MEMREF_TLS_OFFS_SGLEND_PTR,
+    MEMREF_TLS_OFFS_SGLUSED_PTR,
+    /* sigil shared memory buffer */
+
+    MEMREF_TLS_OFFS_IBLOCKS_PTR,
+
+    MEMREF_TLS_OFFS_MEMREFBASE_PTR,
+    MEMREF_TLS_OFFS_MEMREFCURR_PTR,
+    /* the mem cache where addresses are stored */
+
+    MEMREF_TLS_OFFS_SGLSYNCEV_PTR,
+    /* holds NULL if no event, otherwise holds a SglSyncEv */
+
+    MEMREF_TLS_OFFS_ACTIVE,
+    /* whether the thread is under active instrumentation,
+     * e.g. a thread is inactive in a lock */
+
+    MEMREF_TLS_COUNT,
+};
+extern reg_id_t raw_tls_seg;
+extern uint     raw_tls_memref_offs;
+/* raw tls for faster access from instrumented code */
+
+#define TLS_SLOT(tls_base, enum_val) (void **)((byte *)(tls_base)+raw_tls_memref_offs+(sizeof(void*)*enum_val))
+
+#define PERTHR_PTR(tls_base) *(per_thread_t **)TLS_SLOT(tls_base, MEMREF_TLS_OFFS_PERTHR_PTR)
+#define SGLEV_PTR(tls_base) *(SglEvVariant **)TLS_SLOT(tls_base, MEMREF_TLS_OFFS_SGLEV_PTR)
+#define SGLEND_PTR(tls_base) *(SglEvVariant **)TLS_SLOT(tls_base, MEMREF_TLS_OFFS_SGLEND_PTR)
+#define SGLUSED_PTR(tls_base) *(size_t **)TLS_SLOT(tls_base, MEMREF_TLS_OFFS_SGLUSED_PTR)
+#define IBLOCKS_PTR(tls_base) *(instr_block_t **)TLS_SLOT(tls_base, MEMREF_TLS_OFFS_IBLOCKS_PTR)
+#define MEMREFBASE_PTR(tls_base) *(mem_ref_t **)TLS_SLOT(tls_base, MEMREF_TLS_OFFS_MEMREFBASE_PTR)
+#define MEMREFCURR_PTR(tls_base) *(mem_ref_t **)TLS_SLOT(tls_base, MEMREF_TLS_OFFS_MEMREFCURR_PTR)
+#define ACTIVE(tls_base) *(bool *)TLS_SLOT(tls_base, MEMREF_TLS_OFFS_ACTIVE)
+#define SGLSYNCEV_PTR(tls_base) *(SglSyncEv **)TLS_SLOT(tls_base, MEMREF_TLS_OFFS_SGLSYNCEV_PTR)
+
+#define PERTHR_OFFS (raw_tls_memref_offs + MEMREF_TLS_OFFS_PERTHR_PTR*sizeof(void*))
+#define SGLEV_OFFS (raw_tls_memref_offs + MEMREF_TLS_OFFS_SGLEV_PTR*sizeof(void*))
+#define SGLEND_OFFS (raw_tls_memref_offs + MEMREF_TLS_OFFS_SGLEND_PTR*sizeof(void*))
+#define SGLUSED_OFFS (raw_tls_memref_offs + MEMREF_TLS_OFFS_SGLUSED_PTR*sizeof(void*))
+#define IBLOCKS_OFFS (raw_tls_memref_offs + MEMREF_TLS_OFFS_IBLOCKS_PTR*sizeof(void*))
+#define MEMREFBASE_OFFS (raw_tls_memref_offs + MEMREF_TLS_OFFS_MEMREFBASE_PTR*sizeof(void*))
+#define MEMREFCURR_OFFS (raw_tls_memref_offs + MEMREF_TLS_OFFS_MEMREFCURR_PTR*sizeof(void*))
+#define ACTIVE_OFFS (raw_tls_memref_offs + MEMREF_TLS_OFFS_ACTIVE*sizeof(void*))
+#define SGLSYNCEV_OFFS (raw_tls_memref_offs + MEMREF_TLS_OFFS_SGLSYNCEV_PTR*sizeof(void*))
 
 /////////////////////////////////////////////////////////////////////
 //                           Option Parsing                        //
@@ -173,16 +272,24 @@ struct _command_line_options
 //                         FUNCTION DECLARATIONS                   //
 /////////////////////////////////////////////////////////////////////
 
-void instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, int pos, MemType type);
-void instrument_instr(void *drcontext, instrlist_t *ilist, instr_t *where);
-void instrument_comp(void *drcontext, instrlist_t *ilist, instr_t *where, CompCostType type);
+/* The instrumentation functions MUST be called in a specific order */
+/* TODO document preconditions/postconditions */
+void instrument_reset(void *drcontext, instrlist_t *ilist, instr_t *where,
+                      per_thread_t *tcxt);
 
+void instrument_mem_cache(void *drcontext, instrlist_t *ilist, instr_t *where,
+                          uint *mem_ref_count);
+
+void instrument_comp_cache(instr_t *instr, uint *comp_count, SglCompEv *cache);
+
+void instrument_sigil_events(void *drcontext, instrlist_t *ilist, instr_t *where,
+                             per_thread_t *tcxt);
+
+/* IPC */
 void init_IPC(int idx, const char *path, bool standalone);
 void terminate_IPC(int idx);
 void set_shared_memory_buffer(per_thread_t *tcxt);
 void force_thread_flush(per_thread_t *tcxt);
-
-void dr_abort_w_msg(const char *msg);
 
 void parse(int argc, char *argv[], command_line_options *clo);
 

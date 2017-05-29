@@ -26,23 +26,16 @@
 #endif
 
 static inline void
-send_sync_event(per_thread_t *tcxt, SyncType type)
+set_sync_event(per_thread_t *tcxt, SyncType type)
 {
-    if(tcxt->buffer.events_ptr == tcxt->buffer.events_end)
-        set_shared_memory_buffer(tcxt);
-
-    SglEvVariant *event_slot = tcxt->buffer.events_ptr;
-    event_slot->tag       = SGL_SYNC_TAG;
-    event_slot->sync.type = type;
-
-    ++tcxt->buffer.events_ptr;
-    ++*(tcxt->buffer.events_used);
+    tcxt->sync_ev->type = type;
+    SGLSYNCEV_PTR(tcxt->seg_base) = tcxt->sync_ev;
 }
 
 static inline void
 set_blocked_and_deactivate(per_thread_t *tcxt)
 {
-    tcxt->active = false;
+    ACTIVE(tcxt->seg_base) = false;
     tcxt->is_blocked = true;
     force_thread_flush(tcxt);
 }
@@ -50,20 +43,20 @@ set_blocked_and_deactivate(per_thread_t *tcxt)
 static inline void
 set_unblocked_and_reactivate(per_thread_t *tcxt)
 {
-    tcxt->active = true;
+    ACTIVE(tcxt->seg_base) = true;
     tcxt->is_blocked = false;
 }
 
 static inline void
 deactivate(per_thread_t *tcxt)
 {
-    tcxt->active = false;
+    ACTIVE(tcxt->seg_base) = false;
 }
 
 static inline void
 reactivate(per_thread_t *tcxt)
 {
-    tcxt->active = false;
+    ACTIVE(tcxt->seg_base) = true;
 }
 
 ////////////////////////////////////////////
@@ -84,7 +77,7 @@ wrap_post_pthread_create(void *wrapcxt, void *user_data)
                                              tls_idx);
     LOG_SYNC_EXIT(pthread_create, tcxt->thread_id);
     reactivate(tcxt);
-    send_sync_event(tcxt, SGLPRIM_SYNC_CREATE);
+    set_sync_event(tcxt, SGLPRIM_SYNC_CREATE);
 }
 
 
@@ -106,7 +99,7 @@ wrap_post_pthread_join(void *wrapcxt, void *user_data)
                                              tls_idx);
     LOG_SYNC_EXIT(pthread_join, tcxt->thread_id);
     set_unblocked_and_reactivate(tcxt);
-    send_sync_event(tcxt, SGLPRIM_SYNC_JOIN);
+    set_sync_event(tcxt, SGLPRIM_SYNC_JOIN);
 }
 
 
@@ -128,9 +121,7 @@ wrap_post_pthread_mutex_lock(void *wrapcxt, void *user_data)
                                              tls_idx);
     LOG_SYNC_EXIT(pthread_mutex_lock, tcxt->thread_id);
     set_unblocked_and_reactivate(tcxt);
-
-    /* TODO(soon) Causing deadlocks */
-    //send_sync_event(tcxt, SGLPRIM_SYNC_LOCK);
+    set_sync_event(tcxt, SGLPRIM_SYNC_LOCK);
 }
 
 
@@ -152,7 +143,7 @@ wrap_post_pthread_mutex_unlock(void *wrapcxt, void *user_data)
                                              tls_idx);
     LOG_SYNC_EXIT(pthread_mutex_unlock, tcxt->thread_id);
     reactivate(tcxt);
-    send_sync_event(tcxt, SGLPRIM_SYNC_UNLOCK);
+    set_sync_event(tcxt, SGLPRIM_SYNC_UNLOCK);
 }
 
 
@@ -176,7 +167,7 @@ wrap_post_pthread_barrier(void *wrapcxt, void *user_data)
                                              tls_idx);
     LOG_SYNC_EXIT(pthread_barrier, tcxt->thread_id);
     set_unblocked_and_reactivate(tcxt);
-    send_sync_event(tcxt, SGLPRIM_SYNC_BARRIER);
+    set_sync_event(tcxt, SGLPRIM_SYNC_BARRIER);
 }
 
 
@@ -200,9 +191,7 @@ wrap_post_pthread_cond_wait(void *wrapcxt, void *user_data)
                                              tls_idx);
     LOG_SYNC_EXIT(pthread_cond_wait, tcxt->thread_id);
     set_unblocked_and_reactivate(tcxt);
-
-    /* TODO(soon) Causing deadlocks */
-    //send_sync_event(tcxt, SGLPRIM_SYNC_CONDWAIT);
+    set_sync_event(tcxt, SGLPRIM_SYNC_CONDWAIT);
 }
 
 
@@ -225,7 +214,7 @@ wrap_post_pthread_cond_sig(void *wrapcxt, void *user_data)
                                              tls_idx);
     LOG_SYNC_EXIT(pthread_cond_sig, tcxt->thread_id);
     reactivate(tcxt);
-    send_sync_event(tcxt, SGLPRIM_SYNC_CONDSIG);
+    set_sync_event(tcxt, SGLPRIM_SYNC_CONDSIG);
 }
 
 

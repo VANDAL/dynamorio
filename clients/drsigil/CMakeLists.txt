@@ -16,6 +16,7 @@ include_directories(../../../../..)
 use_DynamoRIO_extension(drsigil drmgr)
 use_DynamoRIO_extension(drsigil drutil)
 use_DynamoRIO_extension(drsigil drwrap)
+use_DynamoRIO_extension(drsigil drreg)
 
 install(TARGETS drsigil
 	DESTINATION ${INSTALL_CLIENTS_LIB})

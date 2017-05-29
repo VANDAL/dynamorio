@@ -89,7 +89,9 @@ ordered_lock(ipc_channel_t *channel, uint tid)
     {
         DR_ASSERT(q->head != NULL && q->tail != NULL);
 
-        ticket_node_t *node = malloc(sizeof(ticket_node_t));
+        ticket_node_t *node = dr_global_alloc(sizeof(ticket_node_t));
+        if (node == NULL)
+            DR_ABORT_MSG("Failed to allocate ticket node\n");
         node->next = NULL;
         node->dr_event = dr_event_create();
         node->waiting = true;
@@ -106,11 +108,16 @@ ordered_lock(ipc_channel_t *channel, uint tid)
         while (node->waiting)
             dr_event_wait(node->dr_event);
 
-        SGL_DEBUG("Wakened  Thread :%d\n", tid);
+        /* clean up */
+        dr_event_destroy(node->dr_event);
+
+        SGL_DEBUG("Awakened Thread :%d\n", tid);
     }
     else
     {
-        ticket_node_t *node = malloc(sizeof(ticket_node_t));
+        ticket_node_t *node = dr_global_alloc(sizeof(ticket_node_t));
+        if (node == NULL)
+            DR_ABORT_MSG("Failed to allocate ticket node\n");
         node->next = NULL;
         node->dr_event = NULL;
         node->waiting = false;
@@ -132,6 +139,7 @@ ordered_unlock(ipc_channel_t *channel)
 
     ticket_queue_t *q = &channel->ticket_queue;
     DR_ASSERT(q->locked);
+    DR_ASSERT(q->head != NULL);
 
     /* Calling thread MUST be the owner of the
      * head of the queue.
@@ -142,16 +150,19 @@ ordered_unlock(ipc_channel_t *channel)
 
     if (q->head == q->tail)
     {
-        free(q->head);
+        dr_global_free(q->head, sizeof(ticket_node_t));
         q->head = NULL;
         q->tail = NULL;
         q->locked = false;
     }
     else
     {
+        /* remove self from queue */
         ticket_node_t *this_head = q->head;
         q->head = this_head->next;
-        free(this_head);
+        dr_global_free(this_head, sizeof(ticket_node_t));
+
+        /* wake up next waiting thread */
         SGL_DEBUG("Waking   Thread :%d\n", q->head->thread_id);
         q->head->waiting = false;
         dr_event_signal(q->head->dr_event);
@@ -190,9 +201,10 @@ static inline void
 set_shared_memory_buffer_helper(per_thread_t *tcxt, ipc_channel_t *channel)
 {
     EventBuffer *current_shmem_buffer = get_buffer(channel, MIN_DR_PER_THREAD_BUFFER_EVENTS);
-    tcxt->buffer.events_ptr = current_shmem_buffer->events + current_shmem_buffer->used;
-    tcxt->buffer.events_end = tcxt->buffer.events_ptr + MIN_DR_PER_THREAD_BUFFER_EVENTS;
-    tcxt->buffer.events_used = &current_shmem_buffer->used;
+    SglEvVariant *current_event = current_shmem_buffer->events + current_shmem_buffer->used;
+    SGLEV_PTR(tcxt->seg_base) = current_event;
+    SGLEND_PTR(tcxt->seg_base) = current_event + MIN_DR_PER_THREAD_BUFFER_EVENTS;
+    SGLUSED_PTR(tcxt->seg_base) = &(current_shmem_buffer->used);
 }
 
 
@@ -211,10 +223,11 @@ void set_shared_memory_buffer(per_thread_t *tcxt)
             .type    = SGLPRIM_SYNC_SWAP,
             .data[0] = tcxt->thread_id
         };
-        tcxt->buffer.events_ptr->tag  = SGL_SYNC_TAG;
-        tcxt->buffer.events_ptr->sync = ev;
-        ++tcxt->buffer.events_ptr;
-        ++*(tcxt->buffer.events_used);
+        SglEvVariant *slot = SGLEV_PTR(tcxt->seg_base);
+        slot->tag = SGL_SYNC_TAG;
+        slot->sync = ev;
+        ++(SGLEV_PTR(tcxt->seg_base));
+        ++*(SGLUSED_PTR(tcxt->seg_base));
     }
 
     channel->last_active_tid = tcxt->thread_id;
@@ -230,9 +243,9 @@ void force_thread_flush(per_thread_t *tcxt)
         get_next_buffer(channel);
         ordered_unlock(channel);
         tcxt->has_channel_lock = false;
-        tcxt->buffer.events_ptr = NULL;
-        tcxt->buffer.events_end = NULL;
-        tcxt->buffer.events_used = NULL;
+        SGLEV_PTR(tcxt->seg_base) = NULL;
+        SGLEND_PTR(tcxt->seg_base) = NULL;
+        SGLUSED_PTR(tcxt->seg_base) = NULL;
     }
 }
 
@@ -250,7 +263,7 @@ open_sigil2_fifo(const char *path, int flags)
         if(i == max_tests)
         {
             dr_printf("%s\n", path);
-            dr_abort_w_msg("DrSigil timed out waiting for sigil2 fifos");
+            DR_ASSERT_MSG(false, "DrSigil timed out waiting for sigil2 fifos");
         }
 
         struct timespec ts;
@@ -261,7 +274,7 @@ open_sigil2_fifo(const char *path, int flags)
 
     file_t f = dr_open_file(path, flags);
     if(f == INVALID_FILE)
-        dr_abort_w_msg("error opening empty fifo");
+        DR_ABORT_MSG("error opening empty fifo");
 
     return f;
 }
@@ -280,6 +293,7 @@ init_IPC(int idx, const char *path, bool standalone)
     channel->queue_lock        = dr_mutex_create();
     channel->ticket_queue.head = NULL;
     channel->ticket_queue.tail = NULL;
+    channel->ticket_queue.locked = false;
     channel->shared_mem    = NULL;
     channel->full_fifo     = -1;
     channel->empty_fifo    = -1;
@@ -294,7 +308,13 @@ init_IPC(int idx, const char *path, bool standalone)
     if (standalone)
     {
         /* mimic shared memory writes */
-        channel->shared_mem = dr_global_alloc(sizeof(Sigil2DBISharedData));
+        channel->shared_mem = dr_raw_mem_alloc(sizeof(Sigil2DBISharedData),
+                                               DR_MEMPROT_READ | DR_MEMPROT_WRITE,
+                                               NULL);
+        if (channel->shared_mem == NULL)
+            DR_ABORT_MSG("Failed to allocate pseudo shared memory buffer\n");
+        for (int i=0; i<SIGIL2_IPC_BUFFERS; ++i)
+            channel->shared_mem->eventBuffers[i].used = 0;
     }
     else
     {
@@ -330,7 +350,7 @@ init_IPC(int idx, const char *path, bool standalone)
          * by Sigil2 before the fifos are created */
         file_t map_file = dr_open_file(shmem_name, DR_FILE_READ|DR_FILE_WRITE_APPEND);
         if(map_file == INVALID_FILE)
-            dr_abort_w_msg("error opening shared memory file");
+            DR_ABORT_MSG("error opening shared memory file");
 
         size_t mapped_size = sizeof(Sigil2DBISharedData);
         channel->shared_mem = dr_map_file(map_file, &mapped_size,
@@ -338,7 +358,7 @@ init_IPC(int idx, const char *path, bool standalone)
                                           DR_MEMPROT_READ|DR_MEMPROT_WRITE, 0);
 
         if(mapped_size != sizeof(Sigil2DBISharedData) || channel->shared_mem == NULL)
-            dr_abort_w_msg("error mapping shared memory");
+            DR_ABORT_MSG("error mapping shared memory");
 
         dr_close_file(map_file);
     }
@@ -351,10 +371,12 @@ void
 terminate_IPC(int idx)
 {
     ipc_channel_t *channel = &IPC[idx];
+    DR_ASSERT(channel->ticket_queue.head == NULL &&
+              channel->ticket_queue.tail == NULL);
 
     if (channel->standalone)
     {
-        dr_global_free(channel->shared_mem, sizeof(Sigil2DBISharedData));
+        dr_raw_mem_free(channel->shared_mem, sizeof(Sigil2DBISharedData));
     }
     else
     {
@@ -363,7 +385,7 @@ terminate_IPC(int idx)
         uint last_buffer = channel->shmem_buf_idx;
         if(dr_write_file(channel->full_fifo, &last_buffer, sizeof(last_buffer)) != sizeof(last_buffer) ||
            dr_write_file(channel->full_fifo, &finished,    sizeof(finished))    != sizeof(finished))
-            dr_abort_w_msg("error writing finish sequence sigil2 fifos");
+            DR_ABORT_MSG("error writing finish sequence sigil2 fifos");
 
         /* wait for sigil2 to disconnect */
         while(dr_read_file(channel->empty_fifo, &finished, sizeof(finished)) > 0);

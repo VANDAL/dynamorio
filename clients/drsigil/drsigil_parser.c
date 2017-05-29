@@ -46,9 +46,7 @@ parse(int argc, char *argv[], command_line_options *clo)
 
     if(clo->frontend_threads == 0 ||
 	   (clo->standalone == false && clo->ipc_dir == NULL))
-    {
-        dr_abort_w_msg("Parsing Error"); //TODO cleanup
-    }
+        DR_ABORT_MSG("Parsing Error"); //TODO cleanup
 
     if(clo->start_func != NULL)
     {
