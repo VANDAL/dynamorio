@@ -13,13 +13,6 @@
 ipc_channel_t IPC[MAX_IPC_CHANNELS];
 /* Initialize all possible IPC channels (some will not be used) */
 
-#ifdef SGLDEBUG
-#define SGL_DEBUG(...) dr_printf(__VA_ARGS__)
-#else
-#define SGL_DEBUG(...)
-#endif
-
-
 static inline void
 notify_full_buffer(ipc_channel_t *channel)
 {
@@ -87,8 +80,6 @@ ordered_lock(ipc_channel_t *channel, uint tid)
     ticket_queue_t *q = &channel->ticket_queue;
     if (q->locked)
     {
-        DR_ASSERT(q->head != NULL && q->tail != NULL);
-
         ticket_node_t *node = dr_global_alloc(sizeof(ticket_node_t));
         if (node == NULL)
             DR_ABORT_MSG("Failed to allocate ticket node\n");
@@ -108,64 +99,44 @@ ordered_lock(ipc_channel_t *channel, uint tid)
         while (node->waiting)
             dr_event_wait(node->dr_event);
 
-        /* clean up */
+        dr_mutex_lock(channel->queue_lock);
+
+        q->head->next = node->next;
+        if (q->tail == node)
+            q->tail = q->head;
+
         dr_event_destroy(node->dr_event);
+        dr_global_free(node, sizeof(ticket_node_t));
 
         SGL_DEBUG("Awakened Thread :%d\n", tid);
     }
     else
     {
-        ticket_node_t *node = dr_global_alloc(sizeof(ticket_node_t));
-        if (node == NULL)
-            DR_ABORT_MSG("Failed to allocate ticket node\n");
-        node->next = NULL;
-        node->dr_event = NULL;
-        node->waiting = false;
-        node->thread_id = tid;
-
-        DR_ASSERT(q->head == NULL && q->tail == NULL);
-        q->head = q->tail = node;
         q->locked = true;
-
-        dr_mutex_unlock(channel->queue_lock);
     }
+
+    dr_mutex_unlock(channel->queue_lock);
 }
 
 
 static inline void
 ordered_unlock(ipc_channel_t *channel)
 {
+    /* Calling thread MUST be the ticket lock owner */
+
     dr_mutex_lock(channel->queue_lock);
 
     ticket_queue_t *q = &channel->ticket_queue;
     DR_ASSERT(q->locked);
-    DR_ASSERT(q->head != NULL);
-
-    /* Calling thread MUST be the owner of the
-     * head of the queue.
-     *
-     * Pop the head of the queue and signal
-     * the new head. If there are no waiting
-     * threads, then just set the queue to unlocked */
 
     if (q->head == q->tail)
     {
-        dr_global_free(q->head, sizeof(ticket_node_t));
-        q->head = NULL;
-        q->tail = NULL;
         q->locked = false;
     }
     else
     {
-        /* remove self from queue */
-        ticket_node_t *this_head = q->head;
-        q->head = this_head->next;
-        dr_global_free(this_head, sizeof(ticket_node_t));
-
-        /* wake up next waiting thread */
-        SGL_DEBUG("Waking   Thread :%d\n", q->head->thread_id);
-        q->head->waiting = false;
-        dr_event_signal(q->head->dr_event);
+        q->head->next->waiting = false;
+        dr_event_signal(q->head->next->dr_event);
     }
 
     dr_mutex_unlock(channel->queue_lock);
@@ -290,13 +261,21 @@ init_IPC(int idx, const char *path, bool standalone)
     channel->standalone = standalone;
 
     /* Initialize channel state */
-    channel->queue_lock        = dr_mutex_create();
-    channel->ticket_queue.head = NULL;
-    channel->ticket_queue.tail = NULL;
+    ticket_node_t *node = dr_global_alloc(sizeof(ticket_node_t));
+    if (node == NULL)
+        DR_ABORT_MSG("Failed to allocate ticket node\n");
+    node->next = NULL;
+    node->dr_event = NULL;
+    node->waiting = false;
+    node->thread_id = 0;
+    channel->ticket_queue.head = node;
+    channel->ticket_queue.tail = node;
     channel->ticket_queue.locked = false;
-    channel->shared_mem    = NULL;
-    channel->full_fifo     = -1;
-    channel->empty_fifo    = -1;
+    channel->queue_lock = dr_mutex_create();
+
+    channel->shared_mem = NULL;
+    channel->full_fifo = -1;
+    channel->empty_fifo = -1;
     channel->shmem_buf_idx = 0;
 
     for(uint i=0; i<sizeof(channel->empty_buf_idx)/sizeof(channel->empty_buf_idx[0]); ++i)
@@ -371,8 +350,6 @@ void
 terminate_IPC(int idx)
 {
     ipc_channel_t *channel = &IPC[idx];
-    DR_ASSERT(channel->ticket_queue.head == NULL &&
-              channel->ticket_queue.tail == NULL);
 
     if (channel->standalone)
     {
@@ -395,5 +372,6 @@ terminate_IPC(int idx)
         dr_unmap_file(channel->shared_mem, sizeof(Sigil2DBISharedData));
     }
 
+    dr_global_free((void*)channel->ticket_queue.head, sizeof(ticket_queue_t));
     dr_mutex_destroy(channel->queue_lock);
 }

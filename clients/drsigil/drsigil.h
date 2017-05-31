@@ -15,6 +15,11 @@
     if (drreg_unreserve_register(drcontext, ilist, where, reg) != DRREG_SUCCESS) \
         DR_ASSERT(false);
 
+#ifdef SGLDEBUG
+#define SGL_DEBUG(...) dr_printf(__VA_ARGS__)
+#else
+#define SGL_DEBUG(...)
+#endif
 
 
 /////////////////////////////////////////////////////////////////////
@@ -39,8 +44,8 @@ typedef struct _ticket_queue_t
      * avoid the memory usage+bandwidth overhead of writing
      * to a local buffer and then copying to shared memory. */
 
-    ticket_node_t *head;
-    ticket_node_t *tail;
+    volatile ticket_node_t *head;
+    volatile ticket_node_t *tail;
     volatile bool locked;
 } ticket_queue_t;
 
